@@ -1,0 +1,26 @@
+# Game data: never commit (copyrighted). Bring your own copy.
+original/
+*.dc42
+*.dsk
+*.img
+*.sit
+*.hqx
+*.bin
+*.zip
+
+# Everything extracted from or generated out of the game
+work/
+src/gen/
+
+# Build output
+build/
+*.o
+*.obj
+*.exe
+
+# Python / editor clutter
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+.DS_Store
