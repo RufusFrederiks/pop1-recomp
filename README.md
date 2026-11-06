@@ -40,6 +40,24 @@ ext/macrecomp/   the toolkit (submodule, unmodified)
 DEV-LOG.md       what was done, step by step
 ```
 
+## Supported version
+
+Built and tested against one release only: the Macintosh *Prince of Persia*
+(Brøderbund, 1992) on three 800K floppies, as DiskCopy 4.2 images. Other
+releases or dumps may have different code and are not expected to work.
+Check your copy against these SHA-256 hashes:
+
+| File | SHA-256 |
+|---|---|
+| `Prince of Persia (Disk 1 of 3).dc42` | `40ec0ba5ec7578e4b551e38d83b9869e9353f2b85f932a24b20e2b973c9b24c4` |
+| `Prince of Persia (Disk 2 of 3).dc42` | `85831460c77859a85bda16ebe46af636fa1924f34d8bc1cdaf79011eb18bda02` |
+| `Prince of Persia (Disk 3 of 3).dc42` | `1e2401f94020dafbc38717de41773d162114ddefd1dfbb4ce6fdc52d7a191539` |
+
+On Windows: `certutil -hashfile "Prince of Persia (Disk 1 of 3).dc42" SHA256`;
+on Linux/macOS: `sha256sum *.dc42` (or `shasum -a 256`).
+
+This project does not say where to get the game; use your own copy.
+
 ## Building
 
 Needs Python 3 (`pip install -r ext/macrecomp/tools/requirements.txt`), CMake,
