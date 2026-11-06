@@ -134,6 +134,7 @@ For headless runs: `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software`.
 - [x] Recomp menu (start, pause, sound, music, themes, fullscreen)
 - [x] Colour mode (Persia(COLOR), 640x480) and LC colour (Persia(LC), 512x384)
 - [x] Savestates (F5 / F9, nine slots)
-- [ ] Level 1 finishable
+- [x] Level 1 finishable (played through on Windows)
+- [ ] Levels 2 and up tested
 - [ ] Sound effects checked, music seams fixed
 - [ ] Copy-protection screen checked

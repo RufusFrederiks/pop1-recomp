@@ -632,3 +632,8 @@ Smaller things:
   the real "Persian" font. The same code could serve B&W.
 - `m68k_call: no function at …` right after each music-driver unpack, as
   before.
+
+## 2026-11-06 — Step 21: Level 1 played through
+
+First real playtest on Windows: Level 1 can be finished from start to exit.
+Levels 2 and up have not been tested yet; that is the next playtest.
