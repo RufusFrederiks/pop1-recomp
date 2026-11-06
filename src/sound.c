@@ -27,6 +27,7 @@
 #include "macrecomp/m68k.h"
 #include "macrecomp/toolbox.h"
 #include "pop1.h"
+#include "mr/state_io.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -159,6 +160,17 @@ void pop_sound_poll(void){
 /* A sampled-sound header (standard, encode 0): samplePtr(4) length(4)
  * sampleRate(Fixed 4) loopStart(4) loopEnd(4) encode(1) baseFrequency(1)
  * sampleArea[]. */
+/* Savestates: what is playing (the samples themselves are guest memory). */
+void pop_sound_state(StateIO *io){
+    ST(io, g_play); ST(io, g_nplay);
+    if(!io->save){
+        if(g_dev) SDL_LockAudioDevice(g_dev);
+        g_tail = g_head;                    /* drop what was mixed for the old state */
+        if(g_dev) SDL_UnlockAudioDevice(g_dev);
+        g_owed = 0; g_clock_ms = SDL_GetTicks();
+    }
+}
+
 static int queue_buffer(uint32_t chan, uint32_t hdr){
     if(!hdr) return 0;
     uint32_t ptr = m68k_r32(hdr), len = m68k_r32(hdr + 4), rate = m68k_r32(hdr + 8);

@@ -1,5 +1,4 @@
 @echo off
-rem Start the Prince of Persia recomp. Ctrl+N = new game, arrows + Shift to play.
+rem Start Prince of Persia (the recomp). Esc = menu, Ctrl+N = new game, F5/F9 = save/load state.
 cd /d "%~dp0"
-build\pop1.exe
-if errorlevel 1 pause
+start "" "game\PrinceOfPersia.exe"

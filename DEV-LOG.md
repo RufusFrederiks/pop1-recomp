@@ -383,3 +383,252 @@ DLLs needed), the game's files inside, and the game's own icon.
 
 Tested under Wine with nothing but the .exe in an empty folder: unpacks,
 start menu, Start Game, play.
+
+## 2026-11-06 — Step 13: the 68020 code (scaled index)
+
+A note on offsets first: the files in `work/disasm/` are disassembled from the
+CODE resource *including* its 4-byte header, so their offsets are 4 more than
+the lifter's (`fn_2_xxxx`, the `m68k_unimplemented` reports). Below,
+"disasm" means the former. The earlier entries mixed the two: CODE 2
+`0x3a34` (Step 4) is a lifter offset, `0x1c2a` and `0x1b5e` (Step 11) are
+disasm offsets.
+
+The colour path picks its sprite blitters by depth (disasm `0x692`): four
+function pointers at `A5-0x5c22..-0x5c16` are set to jump-table entries 32–35
+(1-bit), 36–39 (4-bit) or 40–43 (8-bit). Entries 36 and 40 are lifter
+`0x3a24` and `0x3dc4`, and both start with `(a0,d1.w*4)` — 68020 code, which
+only a colour Mac (68020 or better) ever runs. Two things stood in the way:
+
+- `lift68k.py` cannot parse the scaled-index form, and
+- its "a 68000 cannot encode this, so it is not a function start" rule threw
+  both functions away as starts, so they were lifted as the tail of the
+  function before them.
+
+`tools/lift.py` now wraps `parse()` for `(An,Xn.s*k)` / `d(An,Xn.s*k)` and
+relaxes the start rule for scaled index only (memory-indirect still rejects
+a start). CODE 2: 186 → 188 functions, 9 → 2 untranslated instructions (the
+two left are data: the credits text and a table).
+
+## 2026-11-06 — Step 14: Colour QuickDraw, GDevices, the Palette Manager
+
+How the game chooses its graphics (disasm CODE 2 `0x1d8`, `0x4da`):
+`hasColorQD` from SysEnvirons (`A5-0x5f67`), a trap check, then the main
+GDevice's PixMap: depth `cmpCount × cmpSize` (1, 2, 4 or 8, else Alert
+1005) into `A5-0x5e52`, and the device rectangle. Colour needs depth ≥ 4
+(flag `A5-0x5df7`); a rectangle of at least 640×400 sets `A5-0x5df6` ("big
+screen"). Then `Persia(COLOR)` (colour + big), `Persia(LC)` (colour, small)
+or `Persia(BW)`. Play area 640×400 or 512×334. An Option key held at start-up
+swaps big/small.
+
+What it then calls in colour (all in `src/cqd.c`, new):
+
+- **Device**: an 8-bit screen in guest memory (640×480 for COLOR, 512×384
+  for LC), a GDevice → PixMap → ColorTable (the standard 8-bit Mac table),
+  `MainDevice`/`DeviceList`/`TheGDevice` and `ScrnBase`/`ScreenRow` in low
+  memory. `GetMainDevice`, `GetDeviceList`, `GetNextDevice` (none),
+  `GetGDevice`, `SetGDevice`. SysEnvirons says Mac II (or LC), 68020,
+  `hasColorQD`; InitGraf's `screenBits` describes the colour screen.
+- **Ports**: `OpenCPort` (its offscreen frame buffer: the game then points
+  the PixMap at its own `NewPtr` block, rowBytes | `$8000`), `NewCWindow`
+  (macrecomp's NewWindow for the bookkeeping, then a colour port whose PixMap
+  maps local (0,0) to the window's place on screen; clipRgn wide open as on a
+  real Mac), `SetOrigin` moving the PixMap's bounds, `GetWMgrPort`.
+  macrecomp's 1-bit drawing into a colour port is harmless: it reads
+  rowBytes 0 there and draws nothing.
+- **Drawing into colour ports**: PaintRect, EraseRect, InverRect, FillRect,
+  PaintRgn/EraseRgn/InvertRgn (through `qd.c`'s region lists), and
+  **CopyBits** with a PixMap on either side (`qd.c` hands it over): 8→8 by
+  rows for plain srcCopy, otherwise per pixel with the transfer modes, mask
+  region and the 1-bit→8-bit colouring by fgColor/bkColor. No colour-table
+  translation: the game gives its offscreen PixMap the device's own table
+  while its window is active (disasm `0x1ab6`).
+- **Text** in the game's own bitmap font: FONT 25616 ("Persian" 16, set by
+  `TextFont(200)`/`TextSize(16)`), DrawString/DrawChar/DrawText/StringWidth,
+  with srcBic (the status line is drawn white on black that way). `traps.c`
+  now keeps TextFont/Face/Mode/Size in the port.
+- **Colours**: ForeColor/BackColor (the eight old colours to device
+  indices), RGBForeColor/RGBBackColor, Color2Index, Index2Color.
+- **Palette Manager**: NewPalette (from `clut` 2000, 201 colours, all
+  pmAnimated except 0 and 1), SetEntryUsage, SetPalette, GetPalette,
+  ActivatePalette, AnimatePalette, AnimateEntry, PmForeColor, PmBackColor,
+  GetSubTable, Dispose*. Palette entry *i* is shown through device index *i*.
+  That is allowed because the game never assumes an assignment: at
+  activation it calls `PmForeColor(i)` for each of its colours and reads the
+  port's fgColor back into a translation table (`A5-0x5d06`, disasm
+  `0x19c2`). AnimatePalette changes only pmAnimated entries, as the real one
+  does, so white and black (pmTolerant) never fade.
+
+The effects, in colour: the fades (disasm `0x23c4`) build a scaled copy of the
+clut and AnimatePalette it once per tick; each level's 13 colours go in at
+entries `0x69..0x75` (`0x24c4`); the hurt flash is `AnimateEntry(2, …)`
+(entry 2 is the background black, `0x246e`); the torches cycle entries
+196–200. All of them wait for the next tick in a TickCount busy loop, so
+the front-end now also presents from TickCount (at most every 20 ms, never a
+half-built room): a palette change shows at once, as on a real screen. That
+also makes the B&W screen shake and flash visible while they run.
+
+Dialogs and alerts are still macrecomp's, drawn on its 1-bit screen. In
+colour mode nothing else draws there, so `traps.c` tracks the open dialogs'
+rectangles (DLOG/ALRT bounds, Standard File: all of it) and the front-end
+shows the 1-bit screen inside them, over the colour picture.
+
+Result: title, the story text, the princess scene and Level 1 in colour, in
+both COLOR (640×480) and LC (512×384) layouts; "LEVEL 1" / "60 MINUTES LEFT"
+in the game's font; the fade-in at start-up. Four 150 s random-play runs
+(colour ×2, LC, B&W): no unimplemented traps, no errors, and no black frames
+in B&W.
+
+## 2026-11-06 — Step 15: the presenter and the Graphics choice
+
+- `platform.c` presents the 8-bit screen through the device's colour table
+  (read from guest memory every frame, so fades and palette animation show
+  up by themselves). The window and textures take the screen's size;
+  scaling, fullscreen and scanlines work as before. The B&W themes apply to
+  the B&W picture only ("Display: Colour" in colour mode).
+- Recomp menu: **Graphics: Colour / LC Colour / B&W** (left/right). The game
+  chooses its graphics once, at start-up, from the machine it finds, so a
+  different mode is a different machine: Enter on the changed item restarts
+  the program in that mode (`pop_restart` in `main.c`: `CreateProcess` with
+  the same command line on Windows, `execv` elsewhere; it drops `POPKEYS`
+  and `POPMODE` so the new run neither replays a script nor overrides the
+  choice). Saved in `pop1.cfg` as `graphics = 0/1/2`; **colour is the
+  default**. `POPMODE=bw|colour|lc` overrides it (headless tests).
+- Debug knobs: `POPSHOTS` writes `.ppm` in colour; `POPUISHOT` now captures
+  whatever the player sees (dialogs, toasts) and works inside modal loops;
+  `POPEXIT` is honoured inside modal loops too; `POPCQD=n` traces the
+  colour/palette traps; `POPKEYS` takes `menu<id>.<item>@t` (a menu pick,
+  e.g. `menu1000.1` = About), `save<n>@t` and `load<n>@t`.
+
+## 2026-11-06 — Step 16: savestates
+
+A static recomp keeps part of the machine on the native stack: a lifted
+function part-way through is a C function part-way through, and that cannot
+go in a file. So states are taken and put back at one point only: the game's
+single WaitNextEvent, which main (CODE 2 offset 0) calls itself at the top
+of its loop, once per frame. Measured: the lifted call stack there is always
+`[main]` (depth 1), from the title to play, so the native stack is identical
+at every pass and a restored machine carries on from exactly that call.
+Requests (menu, F5/F9, POPKEYS) wait for the next pass.
+
+What a state holds (`src/state.c`, new):
+
+- the 68k registers and every non-zero 4 KB page of guest memory (≈ 1.7 MB
+  B&W, 2.5–2.9 MB colour);
+- macrecomp's host-side state: window list, heap pointer, which resources are
+  loaded and their handles, the handle-size table, QuickDraw's pen, clip and
+  target, open files and their positions, the dialog table. These are
+  file-local statics, so `src/mr/{toolbox,quickdraw,files,dialog}_state.c`
+  compile macrecomp's files **unchanged** by `#include` and add one function
+  each that can see them (CMake and `cross-windows.sh` build those instead of
+  the originals; the submodule is untouched);
+- this recomp's own: region lists and update state (`qd.c`), detached
+  resources and where the music drivers were unpacked (`traps.c`: a state
+  from another run registers the lifted drivers at the saved address), the
+  device and palettes (`cqd.c`), what the Sound Manager is playing
+  (`sound.c`; the ring is dropped and the clock restarted);
+- the clock: `plat_ticks()` (Ticks, TickCount, VBL) gets an offset so Ticks
+  continues from the saved value; the debug knobs use `pop_wall_ticks()`.
+
+Loading reads and checks the whole file first (magic, version, graphics mode,
+call depth, every section's length); the running machine is kept in memory
+and put back if anything does not fit, so a bad or old file changes nothing.
+A state belongs to its graphics mode (the heap layout differs).
+
+Player side: **F5** saves, **F9** loads (current slot); the menu has Save
+State / Load State with a slot (1–9, left/right) and shows when the slot was
+saved and in which mode. A short message confirms. Files: `saves/slot<n>.state`
+next to `pop1.cfg` (gitignored).
+
+Tested headless in all three modes: save, play on, load → the frame matches
+the saved one (only the torch flames differ) and play continues; a state
+saved in one run loads in a fresh run; a B&W run refuses a colour state.
+
+## 2026-11-06 — Step 17: Windows builds
+
+`tools/cross-windows.sh` (both builds) with the new files, tested under
+Wine: `pop1.exe` in colour, save and load (slot 2), and the Graphics switch
+restarting the program in LC mode via CreateProcess. `PrinceOfPersia.exe`
+carries all three disks' graphics already, so Colour and LC work from the
+single file too.
+
+## 2026-11-06 — Step 18: a game folder
+
+The playable build now lives on its own: `tools/cross-windows.sh
+--standalone` writes `game/PrinceOfPersia.exe` (gitignored, like everything
+made from the disks) instead of `build/`. `Play.cmd` starts that exe. The old
+copies (`PrinceOfPersia.exe` in the repo root, `build\pop1.exe` and
+`build\SDL2.dll`) are no longer made by default; the console developer build
+is still `tools/cross-windows.sh` without `--standalone`. Rebuilt clean and
+checked under Wine (colour, save/load).
+
+## 2026-11-06 — Step 19: a portable game folder
+
+The single-file build now keeps everything next to itself
+(`SDL_GetBasePath`): the unpacked game files in `data\`, `saves\`,
+`pop1.cfg`, `pop1.log`. So `game\` can be copied or moved as a whole. If a
+file cannot be written there (Program Files and the like) it falls back to
+the per-user folder as before. Settings and savestates an earlier version
+left in `%APPDATA%\pop1-recomp\PrinceOfPersia\` are copied over the first
+time the portable folder is used. Checked under Wine: unpack, migration of
+two old states, save and load.
+
+## 2026-11-06 — Step 20: the copy-protection level, and memory reuse
+
+Rufus reached the copy-protection level (between levels 1 and 2) and found
+it garbled: torch flames and potion bubbles inside walls, potions missing,
+cut-out sprites; solved it anyway, and the garbage stayed into level 2. His
+savestate showed it at once here.
+
+**How the protection works** (not a dialog, as Step 12 guessed, but a
+level): `A5-0x459e` holds the level before which it comes (`CODE 2 0x1dd6`,
+0x2082); the game then plays LEVL 15 first: an alert, "Drink the potion
+matching the first letter of the word...", then a level of potions on
+shelves, each with a letter (drawn by CODE 3 `0x1bca`), and "Page 12, Line 4,
+Word 4" in the status line. `POPPOKE="a5-0x459e=1@2.5"` before Ctrl+N goes
+straight there.
+
+**The bug was not in the colour code**: the same thing happens in B&W (where
+the screen goes black). macrecomp makes every new dialog the current port
+(`make_dialog`) and never puts the old one back. Inside Macintosh says
+GetNewDialog leaves the current port alone and Alert restores it. So after
+the protection alert the game drew into the closed alert's port: InvalRects
+went to it, the window never got its update, rooms never appeared. Fixed in
+`traps.c`: GetNewDialog and Alert restore the port; DisposeDialog of the
+current port makes the front window current. Savestates made before the fix
+carry the dead port; loading one now repairs it (`mrs_repair_port`).
+
+**Memory**: while tracing this, the heap. macrecomp's NewHandle/NewPtr are a
+bump allocator and Dispose does nothing. The game saves the background under
+every moving sprite in a new handle each frame and disposes of it the next
+(CODE 2 `0x3f7a`/`0x3fdc`), so the heap grew ~2 MB a minute: Rufus's session
+was at 25 of 22+8 MB, and a long game would have run out. `src/heap.c` (new)
+takes NewHandle/NewPtr/DisposeHandle/DisposePtr first: blocks are remembered
+with their capacity, a disposed block waits in a short quarantine (64
+blocks) and then joins an address-ordered free list (merged with its
+neighbours), and a request takes the smallest block that fits before the
+bump allocator is asked. Resource handles are never freed unless detached.
+A 90 s run: 746 blocks reused, 99 new; the heap no longer grows during play.
+The tables go into savestates (format version 2; version 1 states still
+load, their old blocks are simply never reused).
+
+Smaller things:
+- Scripted keys (`POPKEYS`) now reach the HAL's dialogs and alerts too.
+- A save asked for in the middle of a room change waits for the new room,
+  so a state never starts on a blank screen.
+- Debug knobs: `POPPOKE="a5-0x56f4=15@6,..."` (write a word at a time),
+  `POPUPD=1` (InvalRect/BeginUpdate trace), `POPHEAPSTAT=1` (reuse counts
+  at exit).
+
+### Known issues / next
+
+- The alert's text is cut short by macrecomp's dialog text layout ("Drink
+  the potion matching the first      le..."); the level's status line has the
+  page/line/word.
+- The copy-protection dialog (DLOG 1001) still has not been seen; in colour
+  it will be drawn by macrecomp's 1-bit dialog code inside the overlay.
+- 4-bit colour (the game supports it) is not offered: the 8-bit modes cover
+  both graphics sets.
+- Text in the B&W game is still macrecomp's 5×7 font; the colour game uses
+  the real "Persian" font. The same code could serve B&W.
+- `m68k_call: no function at …` right after each music-driver unpack, as
+  before.

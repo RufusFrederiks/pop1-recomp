@@ -17,6 +17,14 @@ Added:
                               section
   move.w sr,<ea> / move.w <ea>,sr / move.w <ea>,ccr
   movep.w/.l  Dn,d(An) and d(An),Dn   (byte lanes, every other address)
+  (An,Xn.s*k) and d(An,Xn.s*k)          68020 scaled index (k = 1, 2, 4, 8).
+                              Prince of Persia's 4- and 8-bit sprite blitters
+                              (CODE 2 0x3a24, 0x3dc4) index their handle
+                              tables with (a0,d1.w*4); every colour Mac had a
+                              68020 or better, so the colour path uses them.
+                              The lifter's "not a 68000 instruction, so not a
+                              function start" rule is relaxed for this form
+                              only (memory-indirect still rejects a start).
 """
 import re
 import sys
@@ -117,6 +125,44 @@ def emit_extra(ins):
             return ["M.d[%d]=(M.d[%d]&0xFFFF0000u)|(%s);" % (d, d, val)]
     return None
 
+
+# ---- 68020 scaled index ----
+# capstone prints "(a0, d1.w * 4)" / "$10(a3, d1.l * 2)"; norm_op squeezes the
+# space after the comma but not around the '*'.
+_SCALED = re.compile(r"(-?\$?[0-9a-fA-F]+)?\(a(\d),(d|a)(\d)\.(w|l)\s*\*\s*([1248])\)")
+_orig_parse = L.parse
+
+
+def parse(tok, sz):
+    t = L.norm_op(tok)
+    m = _SCALED.fullmatch(t)
+    if m:
+        d = int(m.group(1).replace("$", "0x"), 0) if m.group(1) else 0
+        n = int(m.group(2)); xr = m.group(3); xn = int(m.group(4))
+        idx = f"M.{xr}[{xn}]" if m.group(5) == "l" else f"(int32_t)(int16_t)M.{xr}[{xn}]"
+        return L.mem(f"(M.a[{n}]+({d})+({idx})*{m.group(6)})", sz)
+    return _orig_parse(tok, sz)
+
+
+L.parse = parse
+
+_orig_not_68000 = L.not_68000
+
+
+def not_68000(code, start, probe=16, window=96):
+    """As upstream, but a scaled index alone no longer disqualifies a start."""
+    seen = 0
+    for ins in L.md.disasm(code[start:min(start + window, len(code))], start):
+        if seen >= probe:
+            break
+        seen += 1
+        op = ins.op_str
+        if "([" in op or "invalid" in op:
+            return True
+    return False
+
+
+L.not_68000 = not_68000
 
 _orig_emit_inner = L.emit_inner
 

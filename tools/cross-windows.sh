@@ -4,7 +4,7 @@
 #   tools/cross-windows.sh /path/to/SDL2-2.30.x/x86_64-w64-mingw32
 #       -> build/pop1.exe + build/SDL2.dll (console; reads work/files/)
 #   tools/cross-windows.sh --standalone /path/to/SDL2-2.30.x/x86_64-w64-mingw32
-#       -> build/PrinceOfPersia.exe: one file, no console, SDL linked in,
+#       -> game/PrinceOfPersia.exe: one file, no console, SDL linked in,
 #          your game files inside (tools/embed.py), the game's own icon.
 #          Made from your own disks: for your own use, not for sharing.
 #
@@ -37,8 +37,11 @@ fi
 for f in src/gen/code_*.c; do $CC -O1 -w -c "$f" -o "$OUT/$(basename "$f" .c).o" & done
 for f in src/*.c; do $CC -O2 -c "$f" -o "$OUT/$(basename "$f" .c).o" & done
 $CC -O2 -w -Dm68k_time_slice=mr_core_time_slice -c "$OUT/m68k.c" -o "$OUT/m68k.o" &
-$CC -O2 -w -Dm68k_trap=mr_toolbox_trap -c "$MR/runtime/toolbox.c" -o "$OUT/toolbox.o" &
-for f in quickdraw dialog textedit files; do $CC -O2 -w -c "$MR/runtime/$f.c" -o "$OUT/$f.o" & done
+# toolbox, quickdraw, dialog and files go through src/mr/*_state.c, which
+# include them unchanged and add their savestate functions.
+$CC -O2 -w -Dm68k_trap=mr_toolbox_trap -c src/mr/toolbox_state.c -o "$OUT/toolbox.o" &
+for f in quickdraw dialog files; do $CC -O2 -w -c "src/mr/${f}_state.c" -o "$OUT/$f.o" & done
+$CC -O2 -w -c "$MR/runtime/textedit.c" -o "$OUT/textedit.o" &
 wait
 if [ $STANDALONE = 0 ]; then
   x86_64-w64-mingw32-gcc -mconsole -o build/pop1.exe "$OUT"/*.o -L"$SDLW/lib" -lSDL2 -lm -static-libgcc
@@ -73,7 +76,8 @@ BEGIN
 END
 RC
 (cd "$OUT" && x86_64-w64-mingw32-windres pop1.rc -O coff -o pop1res.o)
-x86_64-w64-mingw32-gcc -mwindows -static -o build/PrinceOfPersia.exe "$OUT"/*.o \
+mkdir -p game
+x86_64-w64-mingw32-gcc -mwindows -static -o game/PrinceOfPersia.exe "$OUT"/*.o \
   "$SDLW/lib/libSDL2.a" -lm -lkernel32 -luser32 -lgdi32 -lwinmm -limm32 -lole32 -loleaut32 \
   -lversion -luuid -ladvapi32 -lsetupapi -lshell32 -ldinput8
-echo "built build/PrinceOfPersia.exe"
+echo "built game/PrinceOfPersia.exe"

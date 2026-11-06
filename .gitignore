@@ -16,11 +16,24 @@ original/
 work/
 src/gen/
 Claude outputs/
-*.wav
 *.ico
+*.rsrc
 
-# Build output
+# Sound effects and music ripped or rendered from the game
+# (tools/extract_snd.py and tools/render_music.py write these wherever you
+# point them, so ignore them by type, not only by folder)
+*.wav
+*.aif
+*.aiff
+*.snd
+*.mp3
+*.ogg
+*.flac
+*.mid
+
+# Build output (game/ holds the playable exe, made from your own disks)
 build/
+game/
 *.o
 *.obj
 *.exe
@@ -32,5 +45,8 @@ __pycache__/
 .vscode/
 .DS_Store
 
-# The front-end's settings (per player)
+# The front-end's settings and savestates (per player)
 pop1.cfg
+pop1.log
+saves/
+*.state

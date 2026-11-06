@@ -88,8 +88,9 @@ static int mac_char(int code, int shift){
 }
 
 /* ---- scripted keys (POPKEYS) ---- */
-typedef struct { int code, cmd; double t, dur; int downsent, upsent; } Scripted;
-#define MAX_SCRIPT 64
+/* code -2: a menu command (menu, item); -3 save state slot `item`, -4 load. */
+typedef struct { int code, cmd; double t, dur; int downsent, upsent, menu, item; } Scripted;
+#define MAX_SCRIPT 256
 static Scripted g_script[MAX_SCRIPT];
 static int g_nscript = -1;
 
@@ -112,16 +113,19 @@ static void script_load(void){
     g_nscript = 0;
     const char *e = getenv("POPKEYS");
     if(!e) return;
-    char buf[2048]; snprintf(buf, sizeof buf, "%s", e);
+    static char buf[16384]; snprintf(buf, sizeof buf, "%s", e);
     for(char *tok = strtok(buf, ","); tok && g_nscript < MAX_SCRIPT; tok = strtok(NULL, ",")){
         Scripted *s = &g_script[g_nscript];
         memset(s, 0, sizeof *s);
         if(*tok == '^'){ s->cmd = 1; tok++; }
         char *at = strchr(tok, '@'); if(!at) continue; *at++ = 0;
         s->code = code_by_name(tok);
+        if(sscanf(tok, "menu%d.%d", &s->menu, &s->item) == 2) s->code = -2;      /* menu1000.1@t */
+        else if(sscanf(tok, "save%d", &s->item) == 1) s->code = -3;              /* save1@t */
+        else if(sscanf(tok, "load%d", &s->item) == 1) s->code = -4;              /* load1@t */
         char *plus = strchr(at, '+');
         s->t = atof(at); s->dur = plus ? atof(plus + 1) : 0.1;
-        if(s->code < 0){ fprintf(stderr, "[keys] unknown key '%s'\n", tok); continue; }
+        if(s->code == -1){ fprintf(stderr, "[keys] unknown key '%s'\n", tok); continue; }
         g_nscript++;
     }
     fprintf(stderr, "[keys] %d scripted key(s)\n", g_nscript);
@@ -158,11 +162,20 @@ static int modifiers(void){
 
 static void script_tick(void){
     if(g_nscript < 0) script_load();
-    double now = plat_ticks() / 60.0;
+    double now = pop_wall_ticks() / 60.0;
     memset(g_held_script, 0, sizeof g_held_script);
     for(int i = 0; i < g_nscript; i++){
         Scripted *s = &g_script[i];
         if(now < s->t) continue;
+        if(s->code < 0){                           /* commands, not keys */
+            if(s->downsent) continue;
+            s->downsent = s->upsent = 1;
+            fprintf(stderr, "[keys] %s %d.%d at %.1f s\n", s->code == -2 ? "menu" : s->code == -3 ? "save state" : "load state",
+                    s->menu, s->item, now);
+            if(s->code == -2) pop_inject_menu(s->menu, s->item);
+            else pop_state_request(s->code == -3 ? 1 : 2, s->item);
+            continue;
+        }
         int held = now < s->t + s->dur;
         if(held){
             g_held_script[s->code >> 3] |= (uint8_t)(1 << (s->code & 7));
@@ -196,6 +209,17 @@ static void script_tick(void){
  * item without a key equivalent: About Prince of Persia. */
 static int is_modifier(int code){
     return code == MK_SHIFT || code == MK_CMD || code == MK_OPTION || code == MK_CONTROL || code == MK_CAPS;
+}
+
+void pop_flush_keys(void){ g_kh = g_kt; }
+
+/* For the HAL's modal loops (dialogs, alerts): scripted keys reach them too. */
+int pop_take_key(int *what, int *msg){
+    script_tick();
+    if(g_kh == g_kt) return 0;
+    *what = g_kq[g_kh].what; *msg = g_kq[g_kh].msg;
+    g_kh = (g_kh + 1) % KQ;
+    return 1;
 }
 
 /* For the front-end's pause loop: scripted keys keep flowing while the game

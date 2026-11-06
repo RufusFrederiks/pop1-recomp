@@ -15,6 +15,7 @@ You need your own copy of the game. Put it in `original/` (gitignored).
 
 ```
 original/        your copy of the game: the three DiskCopy 4.2 images (gitignored)
+game/            PrinceOfPersia.exe, the playable build made from your disks (gitignored)
 work/            extracted resources, files, disassembly (gitignored)
 src/gen/         lifted C generated from the game (gitignored)
 src/             hand-written glue for this game
@@ -23,10 +24,15 @@ src/             hand-written glue for this game
   sound.c        Sound Manager (bufferCmd) on SDL2 audio
   input.c        keyboard: GetKeys, key events, MenuKey
   qd.c           regions, update clipping, CopyBits transfer modes
+  cqd.c          colour: 8-bit screen, GDevice, colour ports, CopyBits with PixMaps, Palette Manager
+  state.c        savestates
+  heap.c         NewHandle/NewPtr/Dispose with reuse of freed memory
+  mr/            macrecomp's toolbox/quickdraw/files/dialog .c files, included unchanged,
+                 plus the functions that save their internal state
   platform.c     window, display themes, the recomp menu (replaces macrecomp's platform_sdl.c)
 tools/
   prepare.py     images -> work/ + src/gen/ (also decodes the music driver)
-  lift.py        macrecomp's lift68k.py plus a few 68000 forms it lacks
+  lift.py        macrecomp's lift68k.py plus a few forms it lacks (incl. 68020 scaled index)
   cross-windows.sh  build pop1.exe / PrinceOfPersia.exe for Windows from Linux
   embed.py       pack work/files into the standalone exe (src/gen/embedded.c)
   make_icon.py   the game's Finder icon -> a Windows .ico
@@ -52,33 +58,68 @@ cmake --build build
 
 ## Playing
 
-On Windows, double-click **`PrinceOfPersia.exe`**: one file, no install. It
-carries your game files inside (built from your own disks with
-`tools/cross-windows.sh --standalone`; keep it for yourself, don't share it).
-On first start it unpacks them into `%APPDATA%\pop1-recomp\PrinceOfPersia\`,
-where its settings and a log (`pop1.log`) also live. `Play.cmd` runs the
-developer build instead (`build\pop1.exe` with a console, reading `work\files\`).
+On Windows, double-click **`game\PrinceOfPersia.exe`** (or `Play.cmd`): one
+file, no install. It carries your game files inside (built from your own
+disks with `tools/cross-windows.sh --standalone`; keep it for yourself, don't
+share it). The `game` folder is **portable**: everything the game writes
+stays in it, so it can be copied or moved as a whole:
+
+```
+game\
+  PrinceOfPersia.exe
+  data\        the game files, unpacked on first start
+  saves\       savestates
+  pop1.cfg     settings
+  pop1.log     log
+```
+
+(Only if that folder is read-only does it use
+`%APPDATA%\pop1-recomp\PrinceOfPersia\` instead.)
+The developer build (`tools/cross-windows.sh` without `--standalone`) is
+`build\pop1.exe` with a console, reading `work\files\`.
 
 The game opens with the **recomp menu**: press Enter on *Start Game*. **Esc**
 or **F1** brings the menu back at any time and pauses the game: resume,
-restart the level, sound effects and music on/off, display theme
-(Macintosh, Amber, Phosphor, Parchment, Midnight), window size, fullscreen,
-scanlines, the controls, quit. **F11** or **Alt+Enter** toggles fullscreen.
-Settings are kept in `pop1.cfg`.
+restart the level, save/load state, sound effects and music on/off,
+graphics, display theme (black-and-white only: Macintosh, Amber, Phosphor,
+Parchment, Midnight), window size, fullscreen, scanlines, the controls,
+quit. **F11** or **Alt+Enter** toggles fullscreen. Settings are kept in
+`pop1.cfg`.
+
+**Graphics** (left/right, then Enter: the game restarts in that mode):
+
+- **Colour** (default): the Mac II version, 256 colours, 640x480,
+  `Persia(COLOR)` from disk 2.
+- **LC Colour**: the Macintosh LC version, 256 colours, 512x384,
+  `Persia(LC)` from disk 3.
+- **B&W**: the original black-and-white version, 512x342, `Persia(BW)`.
+
+**Savestates**: **F5** saves, **F9** loads, in the slot chosen in the menu
+(*Save State* / *Load State*, left/right picks slot 1-9; the menu shows when a
+slot was saved). A state is taken at the start of the game's next frame and
+belongs to the graphics mode it was saved in. Files go to `saves/` next to
+`pop1.cfg`.
 
 In the game: arrow keys or the numeric keypad move, **Shift** acts (grab,
 climb, careful step, draw the sword). **Ctrl+N** is a new game (Ctrl stands
 in for the Mac's Command key, Alt for Option). The picture is the game's
-black-and-white mode (512x342).
+colour mode unless you choose otherwise.
 
 To build the Windows executables on Linux: `tools/cross-windows.sh
 [--standalone] <SDL2 MinGW folder>` (see the script).
 
-Debugging knobs (environment variables): `POPTRACE=n` (first n traps with
-their stack effect), `POPEXIT=s` (quit after s seconds), `POPSHOTS=5,10`
-(+ `POPSHOTDIR`, screenshots), `POPKEYS="^n@8,right@12+2"` (scripted keys),
-`POPWAV=out.wav` (record audio), `POPSOUND=1`, `POPNOAUDIO=1`, and
-macrecomp's own `MRTRACE`, `MRTRAPS`, `MRSHOT`, `MRWATCHADDR`.
+Debugging knobs (environment variables): `POPMODE=bw|colour|lc` (graphics
+mode, overrides `pop1.cfg`), `POPNOMENU=1` (no start menu), `POPTRACE=n`
+(first n traps with their stack effect), `POPCQD=n` (colour/palette traps),
+`POPEXIT=s` (quit after s seconds), `POPSHOTS=5,10` (+ `POPSHOTDIR`,
+screenshots: `.pgm` in B&W, `.ppm` in colour), `POPUISHOT=file.ppm` +
+`POPUISHOTAT=s` (what the player sees, menu and dialogs included),
+`POPKEYS="^n@8,right@12+2,save1@15,load1@20,menu1000.1@25"` (scripted keys,
+savestates and menu picks), `POPPOKE="a5-0x459e=1@2.5"` (write guest memory
+at a time; this one starts at the copy-protection level), `POPUPD=1`,
+`POPHEAPSTAT=1`, `POPWAV=out.wav` (record audio), `POPSOUND=1`,
+`POPNOAUDIO=1`, and macrecomp's own `MRTRACE`, `MRTRAPS`, `MRSHOT`,
+`MRWATCHADDR`.
 For headless runs: `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software`.
 
 ## Status
@@ -91,7 +132,8 @@ For headless runs: `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software`.
 - [x] Level 1 visible
 - [x] Prince moves
 - [x] Recomp menu (start, pause, sound, music, themes, fullscreen)
+- [x] Colour mode (Persia(COLOR), 640x480) and LC colour (Persia(LC), 512x384)
+- [x] Savestates (F5 / F9, nine slots)
 - [ ] Level 1 finishable
 - [ ] Sound effects checked, music seams fixed
-- [ ] Colour mode (Persia(COLOR), Colour QuickDraw)
 - [ ] Copy-protection screen checked

@@ -33,6 +33,7 @@
 #include "macrecomp/m68k.h"
 #include "macrecomp/toolbox.h"
 #include "pop1.h"
+#include "mr/state_io.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -118,14 +119,32 @@ static int list_minus(const Rect *a, int na, const Rect *b, int nb, Rect *out){
     return nc;
 }
 
-/* Paint a region's rectangles: mode 0 paint (pen), 1 erase, 2 invert. */
+/* Paint a region's rectangles: mode 0 paint (pen), 1 erase, 2 invert. In a
+ * colour port, cqd.c fills them with the port's colours. */
 static void rgn_draw(uint32_t h, int mode){
     Rect r[MAXR]; int n = rgn_rects(h, r);
     for(int i = 0; i < n; i++){
+        if(pop_cqd_fill(&r[i], mode)) continue;
         if(mode == 0) qd_paint_rect(&r[i]);
         else if(mode == 1) qd_erase_rect(&r[i]);
         else qd_invert_rect(&r[i]);
     }
+}
+
+/* A new region holding one rectangle (for cqd.c's ports), and setting one. */
+uint32_t pop_qd_rect_rgn(const Rect *r){
+    uint32_t d0 = M.d[0], a0 = M.a[0];
+    SP -= 4; m68k_w32(SP, 0);
+    mr_toolbox_trap(0xA8D8);                  /* NewRgn */
+    uint32_t h = pop32();
+    M.d[0] = d0; M.a[0] = a0;
+    Shadow *s = sh_get(h); if(s) s->n = 0;
+    rgn_set(h, r, 1);
+    return h;
+}
+void pop_qd_set_rect_rgn(uint32_t h, int t, int l, int b, int r){
+    Rect x = { (int16_t)t, (int16_t)l, (int16_t)b, (int16_t)r };
+    rgn_set(h, &x, 1);
 }
 
 /* ---- 2. update regions ---- */
@@ -183,8 +202,13 @@ static void bit_put(const Bits *d, int x, int y, int v){
 static void copybits(void){
     uint32_t mask = pop32(); int mode = (int16_t)pop16();
     uint32_t drp = pop32(), srp = pop32(), dstB = pop32(), srcB = pop32();
-    Bits s = bits(srcB), d = bits(dstB);
     Rect sr = rd_rect(srp), dr = rd_rect(drp);
+    /* A PixMap on either side (rowBytes bit 15): colour, cqd.c's. */
+    if((m68k_r16(srcB + 4) & 0x8000) || (m68k_r16(dstB + 4) & 0x8000)){
+        Rect mr[MAXR]; int nm = mask ? rgn_rects(mask, mr) : 0;
+        if(pop_cqd_copybits(srcB, dstB, &sr, &dr, mode, mask ? mr : NULL, nm)) return;
+    }
+    Bits s = bits(srcB), d = bits(dstB);
     int sw = sr.right - sr.left, sh = sr.bottom - sr.top;
     int dw = dr.right - dr.left, dh = dr.bottom - dr.top;
     if(sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
@@ -267,11 +291,14 @@ int pop_qd_trap(uint16_t w, uint16_t raw){
         Rect old = upd_get(win);
         int had = !empty(&old);
         mr_toolbox_trap(raw);                       /* marks the window as owing an update */
+        if(getenv("POPUPD")) fprintf(stderr, "[upd] InvalRect %d,%d,%d,%d port %06x from %06x\n",
+                                     r.top, r.left, r.bottom, r.right, win, g_last_call);
         g_update_owed = 1;
         if(win){ if(had) rect_union(&old, &r, &r); upd_set(win, &r); }
         return 1; }
     case 0xA922: { /* BeginUpdate(w): visRgn := updateRgn, so drawing is clipped to it */
         uint32_t win = m68k_r32(SP);
+        if(getenv("POPUPD")) fprintf(stderr, "[upd] BeginUpdate %06x\n", win);
         Rect u = upd_get(win);
         mr_toolbox_trap(raw);
         qd_get_clip(&g_saved_clip);
@@ -289,4 +316,9 @@ int pop_qd_trap(uint16_t w, uint16_t raw){
     case 0xA8EC: copybits(); return 1;
     }
     return 0;
+}
+
+/* Savestates: the region shadows and the update state. */
+void pop_qd_state(StateIO *io){
+    ST(io, g_sh); ST(io, g_saved_clip); ST(io, g_in_update); ST(io, g_update_owed);
 }

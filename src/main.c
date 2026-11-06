@@ -193,9 +193,19 @@ static void load_files(void){
 /* ---- the single-file build ----
  * The game files (from your own disks, packed by tools/embed.py) are inside
  * the executable. The File Manager HAL reads files from disk, so on start-up
- * they are unpacked into the per-user folder SDL picks (on Windows
- * %APPDATA%\pop1-recomp\PrinceOfPersia\), once, and run from there. The
- * settings file and a log (pop1.log; there is no console) live there too. */
+ * they are unpacked, once, and run from there.
+ *
+ * Portable: everything lives next to the exe --
+ *     PrinceOfPersia.exe
+ *     data\          the unpacked game files (data\files\...)
+ *     saves\         savestates
+ *     pop1.cfg       settings
+ *     pop1.log       the log (there is no console)
+ * so the folder can be copied or moved as a whole. Only if that folder cannot
+ * be written to (say, Program Files) does it fall back to the per-user folder
+ * SDL picks (%APPDATA%\pop1-recomp\PrinceOfPersia\), which is where earlier
+ * versions kept everything; settings and saves found there are copied over
+ * the first time the portable folder is used. */
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
@@ -207,17 +217,59 @@ typedef struct { const char *path; const uint8_t *data; unsigned len; } PopEmbed
 extern const PopEmbedded pop_embedded[];
 extern const int pop_n_embedded;
 char *SDL_GetPrefPath(const char *org, const char *app);    /* SDL.h would rename main */
+char *SDL_GetBasePath(void);
 
 static void mkdirs(const char *path){                /* every folder above the file */
     char p[1200]; snprintf(p, sizeof p, "%s", path);
     for(char *c = p + 1; *c; c++) if(*c == '/' || *c == '\\'){ char k = *c; *c = 0; MKDIR(p); *c = k; }
 }
-static const char *unpack_embedded(void){
+static int exists(const char *p){ struct stat st; return stat(p, &st) == 0; }
+static void copy_file(const char *from, const char *to){
+    FILE *a = fopen(from, "rb"); if(!a) return;
+    FILE *b = fopen(to, "wb"); if(!b){ fclose(a); return; }
+    char buf[65536]; size_t n;
+    while((n = fread(buf, 1, sizeof buf, a)) > 0) fwrite(buf, 1, n, b);
+    fclose(a); fclose(b);
+}
+/* The folder to keep everything in (with a trailing separator): next to the
+ * exe if a file can be written there, else the per-user folder. */
+static const char *home_dir(int *portable){
+    static char dir[1100];
+    char *base = SDL_GetBasePath();
+    if(base){
+        snprintf(dir, sizeof dir, "%s", base);
+        char probe[1200]; snprintf(probe, sizeof probe, "%spop1.log", dir);
+        FILE *f = fopen(probe, "ab");
+        if(f){ fclose(f); *portable = 1; return dir; }
+    }
+    *portable = 0;
     char *pref = SDL_GetPrefPath("pop1-recomp", "PrinceOfPersia");
     if(!pref) return NULL;
-    static char log[1200]; snprintf(log, sizeof log, "%spop1.log", pref);
+    snprintf(dir, sizeof dir, "%s", pref);
+    return dir;
+}
+static const char *unpack_embedded(void){
+    int portable;
+    const char *home = home_dir(&portable);
+    if(!home) return NULL;
+    /* settings and saves an earlier version left in the per-user folder */
+    if(portable){
+        char *pref = SDL_GetPrefPath("pop1-recomp", "PrinceOfPersia");
+        if(pref){
+            char from[1300], to[1300];
+            snprintf(to, sizeof to, "%spop1.cfg", home); snprintf(from, sizeof from, "%spop1.cfg", pref);
+            if(!exists(to) && exists(from)) copy_file(from, to);
+            for(int i = 1; i <= 9; i++){
+                snprintf(to, sizeof to, "%ssaves/slot%d.state", home, i);
+                snprintf(from, sizeof from, "%ssaves/slot%d.state", pref, i);
+                if(!exists(to) && exists(from)){ mkdirs(to); copy_file(from, to); }
+            }
+        }
+    }
+    static char log[1200]; snprintf(log, sizeof log, "%spop1.log", home);
     freopen(log, "w", stderr);
-    static char work[1200]; snprintf(work, sizeof work, "%swork", pref);
+    fprintf(stderr, "%s folder: %s\n", portable ? "portable" : "per-user", home);
+    static char work[1200]; snprintf(work, sizeof work, "%s%s", home, portable ? "data" : "work");
     for(int i = 0; i < pop_n_embedded; i++){
         char path[1300]; snprintf(path, sizeof path, "%s/%s", work, pop_embedded[i].path);
         struct stat st;
@@ -231,8 +283,42 @@ static const char *unpack_embedded(void){
 }
 #endif
 
+/* ---- starting again ----
+ * The game picks its graphics set once, at start-up, from the machine it
+ * finds; a different mode is a different machine. So the menu's Graphics
+ * choice starts the program afresh, with the same arguments. */
+/* The new run must not replay this one's scripted keys (POPKEYS) or force
+ * the old mode (POPMODE): the player has just chosen another. */
+static void restart_env(void){ putenv((char*)"POPKEYS="); putenv((char*)"POPMODE="); }
+#ifdef _WIN32
+#include <windows.h>
+void pop_restart(void){
+    restart_env();
+    STARTUPINFOW si; PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof si); si.cb = sizeof si; memset(&pi, 0, sizeof pi);
+    wchar_t exe[MAX_PATH]; GetModuleFileNameW(NULL, exe, MAX_PATH);
+    if(CreateProcessW(exe, GetCommandLineW(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)){
+        CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
+    else fprintf(stderr, "restart failed (%lu)\n", (unsigned long)GetLastError());
+    exit(0);
+}
+#else
+#include <unistd.h>
+static char **g_argv;
+void pop_restart(void){
+    restart_env();
+    fflush(NULL);
+    execv("/proc/self/exe", g_argv);
+    execvp(g_argv[0], g_argv);
+    perror("restart"); exit(1);
+}
+#endif
+
 int main(int argc, char **argv){
     int scale = 2;
+#ifndef _WIN32
+    g_argv = argv;
+#endif
 #ifdef POP_STANDALONE
     {   const char *w = unpack_embedded();
         if(w) g_work = w; }

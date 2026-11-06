@@ -36,13 +36,16 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${MR}/runtime/m68
 
 set(MR_RUNTIME
     ${CMAKE_BINARY_DIR}/mr/m68k.c
-    ${MR}/runtime/quickdraw.c
-    ${MR}/runtime/dialog.c
     ${MR}/runtime/textedit.c
-    ${MR}/runtime/files.c
-    ${MR}/runtime/toolbox.c
+    # These four are compiled through src/mr/*_state.c, which #include them
+    # unchanged and add a function that saves and restores their file-local
+    # state (for savestates, src/state.c).
+    src/mr/quickdraw_state.c
+    src/mr/dialog_state.c
+    src/mr/files_state.c
+    src/mr/toolbox_state.c
 )
-set_source_files_properties(${MR}/runtime/toolbox.c PROPERTIES
+set_source_files_properties(src/mr/toolbox_state.c PROPERTIES
     COMPILE_DEFINITIONS "m68k_trap=mr_toolbox_trap")
 set_source_files_properties(${CMAKE_BINARY_DIR}/mr/m68k.c PROPERTIES
     COMPILE_DEFINITIONS "m68k_time_slice=mr_core_time_slice")
@@ -53,6 +56,9 @@ add_executable(pop1
     src/sound.c
     src/input.c
     src/qd.c
+    src/cqd.c
+    src/state.c
+    src/heap.c
     src/platform.c
     ${POP1_GEN}
     ${MR_RUNTIME}

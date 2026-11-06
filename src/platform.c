@@ -28,14 +28,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define W QD_W
-#define H QD_H
+/* The picture: the 1-bit 512x342 screen, or in colour mode the 8-bit screen
+ * (640x480 or 512x384) seen through the device's colour table. */
+#define MAXW 640
+#define MAXH 480
+static int W = QD_W, H = QD_H;
 
 static SDL_Window *g_win;
 static SDL_Renderer *g_ren;
 static SDL_Texture *g_tex, *g_ui;
 static uint32_t g_start_ms, g_last_present;
-static uint32_t g_px[W * H], g_uipx[W * H];
+static uint32_t g_px[MAXW * MAXH], g_uipx[MAXW * MAXH];
 
 /* ---- settings ---- */
 typedef struct { const char *name; uint32_t ink, paper; } Theme;   /* ink = a set bit */
@@ -47,10 +50,13 @@ static const Theme THEMES[] = {
     { "Midnight",  0xFFE8ECF4, 0xFF0A1028 },
 };
 #define NTHEMES ((int)(sizeof THEMES / sizeof *THEMES))
-static struct { int theme, scale, fullscreen, scanlines, sound, music; } S = { 0, 2, 0, 0, 1, 1 };
+static struct { int theme, scale, fullscreen, scanlines, sound, music, graphics; } S = { 0, 2, 0, 0, 1, 1, 1 };
+static const char *GRAPHICS[] = { "B&W", "Colour", "LC Colour" };
+static int g_graphics_running = -1;        /* the mode this run started in */
 
 static void cfg_path(char *out, size_t n){ snprintf(out, n, "%s/../pop1.cfg", pop_work_dir()); }
 static void cfg_load(void){
+    static int loaded; if(loaded) return; loaded = 1;
     char p[1200]; cfg_path(p, sizeof p);
     FILE *f = fopen(p, "rb"); if(!f) return;
     char line[128];
@@ -61,15 +67,34 @@ static void cfg_load(void){
         else if(!strcmp(k, "scale") && v >= 1 && v <= 6) S.scale = v;
         else if(!strcmp(k, "fullscreen")) S.fullscreen = v != 0;
         else if(!strcmp(k, "scanlines")) S.scanlines = v != 0;
+        else if(!strcmp(k, "graphics") && v >= 0 && v <= 2) S.graphics = v;
     }
     fclose(f);
 }
 static void cfg_save(void){
     char p[1200]; cfg_path(p, sizeof p);
     FILE *f = fopen(p, "wb"); if(!f) return;
-    fprintf(f, "# Prince of Persia recomp settings\ntheme = %d\nscale = %d\nfullscreen = %d\nscanlines = %d\n",
-            S.theme, S.scale, S.fullscreen, S.scanlines);
+    fprintf(f, "# Prince of Persia recomp settings\n# graphics: 0 black-and-white, 1 colour (640x480), 2 LC colour (512x384)\n"
+               "graphics = %d\ntheme = %d\nscale = %d\nfullscreen = %d\nscanlines = %d\n",
+            S.graphics, S.theme, S.scale, S.fullscreen, S.scanlines);
     fclose(f);
+}
+
+/* The graphics mode this run uses: POPMODE (bw, colour/color, lc, or 0-2)
+ * if set, else pop1.cfg, else colour. Asked once, before the machine is
+ * built (pop_init): the game chooses its graphics set at start-up. */
+int pop_graphics_mode(void){
+    if(g_graphics_running >= 0) return g_graphics_running;
+    cfg_load();
+    int m = S.graphics;
+    const char *e = getenv("POPMODE");
+    if(e && *e){
+        if(!strcmp(e, "bw") || !strcmp(e, "BW") || !strcmp(e, "0")) m = 0;
+        else if(!strcmp(e, "lc") || !strcmp(e, "LC") || !strcmp(e, "2")) m = 2;
+        else m = 1;
+    }
+    g_graphics_running = m;
+    return m;
 }
 
 /* ---- the game's own font (Mac FONT resource) ---- */
@@ -164,8 +189,11 @@ static int ui_small(int x, int y, const char *s, uint32_t c){
 static void ui_small_center(int cx, int y, const char *s, uint32_t c){ ui_small(cx - (int)strlen(s) * 3, y, s, c); }
 
 /* ---- the menu ---- */
-enum { M_GAME, M_RESTART, M_SOUND, M_MUSIC, M_THEME, M_SCALE, M_FULL, M_SCAN, M_CONTROLS, M_QUIT, M_COUNT };
+enum { M_GAME, M_RESTART, M_SAVE, M_LOAD, M_SOUND, M_MUSIC, M_GRAPHICS, M_THEME, M_SCALE, M_FULL, M_SCAN, M_CONTROLS, M_QUIT, M_COUNT };
 static int g_menu_open, g_sel, g_page_controls, g_in_game, g_quit;
+static int g_slot = 1;                     /* the savestate slot (1-9) */
+static char g_toast[96]; static uint32_t g_toast_until;
+#define ROW (M_COUNT > 11 ? 20 : 22)
 
 int pop_ui_menu_open(void){ return g_menu_open; }
 
@@ -173,9 +201,14 @@ static const char *item_label(int i, char *buf, size_t n){
     switch(i){
     case M_GAME:     return g_in_game ? "Resume" : "Start Game";
     case M_RESTART:  return "Restart Level";
+    case M_SAVE:     snprintf(buf, n, "Save State   Slot %d", g_slot); return buf;
+    case M_LOAD:     snprintf(buf, n, "Load State   Slot %d", g_slot); return buf;
     case M_SOUND:    snprintf(buf, n, "Sound Effects   %s", S.sound ? "On" : "Off"); return buf;
     case M_MUSIC:    snprintf(buf, n, "Music   %s", S.music ? "On" : "Off"); return buf;
-    case M_THEME:    snprintf(buf, n, "Display   %s", THEMES[S.theme].name); return buf;
+    case M_GRAPHICS: snprintf(buf, n, "Graphics   %s%s", GRAPHICS[S.graphics],
+                              S.graphics != g_graphics_running ? " *" : ""); return buf;
+    case M_THEME:    if(g_graphics_running) return "Display   Colour";
+                     snprintf(buf, n, "Display   %s", THEMES[S.theme].name); return buf;
     case M_SCALE:    snprintf(buf, n, "Window Size   %dx", S.scale); return buf;
     case M_FULL:     snprintf(buf, n, "Fullscreen   %s", S.fullscreen ? "On" : "Off"); return buf;
     case M_SCAN:     snprintf(buf, n, "Scanlines   %s", S.scanlines ? "On" : "Off"); return buf;
@@ -184,7 +217,7 @@ static const char *item_label(int i, char *buf, size_t n){
     }
     return "";
 }
-static int item_enabled(int i){ return !(i == M_RESTART && !g_in_game); }
+static int item_enabled(int i){ return !((i == M_RESTART || i == M_SAVE) && !g_in_game) && !(i == M_THEME && g_graphics_running); }
 
 static const uint32_t GOLD = 0xFFE8B84A, GOLD_DIM = 0xFF8C6A22, CREAM = 0xFFF4E9D0,
                       GREY = 0xFF8A8478, PANEL = 0xE6100C08, SHADE = 0x99000000, SEL = 0xFF2A1F0E;
@@ -207,7 +240,7 @@ static void draw_frame(int x, int y, int w, int h){
 static void draw_menu(void){
     ui_clear();
     ui_rect(0, 0, W, H, SHADE);
-    int pw = 300, ph = 304, px = (W - pw) / 2, py = (H - ph) / 2;
+    int pw = 300, ph = 52 + ROW * M_COUNT + 26, px = (W - pw) / 2, py = (H - ph) / 2;
     draw_frame(px, py, pw, ph);
     ui_text_center(W / 2, py + 10, "Prince of Persia", GOLD);
     ui_small_center(W / 2, py + 33, "STATIC RECOMPILATION  -  68K MAC TO NATIVE", GREY);
@@ -224,6 +257,7 @@ static void draw_menu(void){
             { "or letters  w e r / s d f, u i o / j k l", "" },
             { "New game",          "Ctrl+N" },
             { "This menu",         "Esc or F1" },
+            { "Save / load state", "F5 / F9" },
             { "Fullscreen",        "F11 or Alt+Enter" },
         };
         int y = py + 56;
@@ -235,16 +269,25 @@ static void draw_menu(void){
         return;
     }
     int y = py + 52;
-    for(int i = 0; i < M_COUNT; i++, y += 22){
+    for(int i = 0; i < M_COUNT; i++, y += ROW){
         char buf[64]; const char *l = item_label(i, buf, sizeof buf);
         uint32_t c = !item_enabled(i) ? 0xFF4A443A : (i == g_sel ? GOLD : CREAM);
         if(i == g_sel){
-            ui_rect(px + 14, y - 1, pw - 28, 21, SEL);
+            ui_rect(px + 14, y - 1, pw - 28, ROW - 1, SEL);
             for(int k = 0; k < 6; k++) ui_vline(px + 22 + k, y + 4 + k, 12 - 2 * k, GOLD);  /* > */
         }
         ui_text_center(W / 2, y, l, c);
     }
-    ui_small_center(W / 2, py + ph - 18, "UP/DOWN CHOOSE  LEFT/RIGHT CHANGE  ENTER SELECT", GREY);
+    if(g_sel == M_GRAPHICS && S.graphics != g_graphics_running)
+        ui_small_center(W / 2, py + ph - 18, "ENTER: RESTART THE GAME IN THIS MODE", GOLD);
+    else if(g_sel == M_SAVE || g_sel == M_LOAD){
+        char info[80], line[100]; pop_state_info(g_slot, info, sizeof info);
+        snprintf(line, sizeof line, "SLOT %d: %s", g_slot, info);
+        for(char *c = line; *c; c++) if(*c >= 'a' && *c <= 'z') *c -= 32;
+        ui_small_center(W / 2, py + ph - 18, line, GOLD);
+    }
+    else
+        ui_small_center(W / 2, py + ph - 18, "UP/DOWN CHOOSE  LEFT/RIGHT CHANGE  ENTER SELECT", GREY);
 }
 
 /* ---- the window ---- */
@@ -261,6 +304,8 @@ int plat_open(const char *title, int scale){
     (void)scale; (void)title;
     cfg_load();
     font_load();
+    {   uint32_t b; int w, h, rb;
+        if(pop_colour_screen(&b, &w, &h, &rb)){ W = w; H = h; } }
     if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0){ fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");       /* crisp pixels */
     g_win = SDL_CreateWindow("Prince of Persia \xE2\x80\x94 recompiled", SDL_WINDOWPOS_CENTERED,
@@ -294,6 +339,27 @@ static void present_now(void){
     g_last_present = SDL_GetTicks();
     uint32_t base = mr_screen_base();
     const Theme *t = &THEMES[S.theme];
+    uint32_t cb; int cw, ch, crb;
+    if(pop_colour_screen(&cb, &cw, &ch, &crb)){
+        uint32_t pal[256]; pop_colour_clut(pal);
+        for(int y = 0; y < H; y++){
+            const uint8_t *row = M.mem + cb + (uint32_t)y * (uint32_t)crb;
+            for(int x = 0; x < W; x++) g_px[y * W + x] = pal[row[x]];
+        }
+        /* Dialogs and alerts are the HAL's, drawn on its 1-bit screen: show
+         * that screen where one is open. */
+        Rect o;
+        if(pop_dialog_rect(&o)){
+            for(int y = o.top; y < o.bottom; y++){
+                if(y < 0 || y >= H || y >= QD_H) continue;
+                const uint8_t *row = M.mem + base + (uint32_t)y * (QD_W / 8);
+                for(int x = o.left; x < o.right; x++){
+                    if(x < 0 || x >= W || x >= QD_W) continue;
+                    g_px[y * W + x] = ((row[x >> 3] >> (7 - (x & 7))) & 1) ? 0xFF000000 : 0xFFFFFFFF;
+                }
+            }
+        }
+    } else
     for(int y = 0; y < H; y++){
         const uint8_t *row = M.mem + base + (uint32_t)y * (W / 8);
         for(int x = 0; x < W; x++) g_px[y * W + x] = ((row[x >> 3] >> (7 - (x & 7))) & 1) ? t->ink : t->paper;
@@ -309,19 +375,27 @@ static void present_now(void){
         int s = d.h / H;
         for(int y = 0; y < H; y++){ int ly = d.y + y * s + s - 1; SDL_RenderDrawLine(g_ren, d.x, ly, d.x + d.w - 1, ly); }
     }
-    if(g_menu_open){
-        draw_menu();
+    int toast = g_toast[0] && SDL_GetTicks() < g_toast_until;
+    if(g_menu_open || toast){
+        if(g_menu_open) draw_menu(); else ui_clear();
+        if(toast){
+            int tw = (int)strlen(g_toast) * 6 + 24, tx = (W - tw) / 2, ty = 10;
+            ui_rect(tx, ty, tw, 20, PANEL);
+            ui_hline(tx, ty, tw, GOLD); ui_hline(tx, ty + 19, tw, GOLD);
+            ui_vline(tx, ty, 20, GOLD); ui_vline(tx + tw - 1, ty, 20, GOLD);
+            ui_small(tx + 12, ty + 6, g_toast, CREAM);
+        }
         SDL_UpdateTexture(g_ui, NULL, g_uipx, W * 4);
         SDL_RenderCopy(g_ren, g_ui, NULL, &d);
     }
     SDL_RenderPresent(g_ren);
-    if(getenv("POPUISHOT") && g_menu_open){       /* the menu as the player sees it, for headless checks */
+    if(getenv("POPUISHOT")){       /* what the player sees (menu, dialogs, toasts), for headless checks */
         static int done; const char *at = getenv("POPUISHOTAT");
-        if(!done && plat_ticks() >= (uint32_t)(60 * (at ? atof(at) : 0))){ done = 1;
+        if(!done && pop_wall_ticks() >= (uint32_t)(60 * (at ? atof(at) : 0))){ done = 1;
             FILE *f = fopen(getenv("POPUISHOT"), "wb");
             if(f){ fprintf(f, "P6\n%d %d\n255\n", W, H);
                 for(int i = 0; i < W * H; i++){
-                    uint32_t g = g_px[i], u = g_uipx[i]; int a = (int)(u >> 24);
+                    uint32_t g = g_px[i], u = (g_menu_open || toast) ? g_uipx[i] : 0; int a = (int)(u >> 24);
                     for(int k = 16; k >= 0; k -= 8){
                         int cg = (int)((g >> k) & 255), cu = (int)((u >> k) & 255);
                         fputc((cu * a + cg * (255 - a)) / 255, f); }
@@ -334,7 +408,21 @@ static void present_now(void){
 /* macrecomp calls this from many places (every event call, dialogs): show
  * the frame only if nothing has been shown for a while. */
 void plat_present(void){
+    {   const char *e = getenv("POPEXIT");           /* headless runs end on time, modal loops too */
+        if(e && pop_wall_ticks() >= (uint32_t)(atof(e) * 60)){ fprintf(stderr, "[pop] POPEXIT after %s s\n", e); plat_shutdown(); exit(0); } }
     if(SDL_GetTicks() - g_last_present >= 100 && !pop_update_owed()) present_now();
+}
+
+void pop_toast(const char *msg){
+    snprintf(g_toast, sizeof g_toast, "%s", msg);
+    g_toast_until = SDL_GetTicks() + 2500;
+    fprintf(stderr, "[ui] %s\n", msg);
+    present_now();
+}
+
+/* From the game's tick waits (traps.c): keep the screen moving. */
+void pop_tick_present(void){
+    if(SDL_GetTicks() - g_last_present >= 20 && !pop_update_owed()) present_now();
 }
 
 /* ---- menu actions ---- */
@@ -345,8 +433,17 @@ static void menu_activate(int i, int dir){
         if(!g_in_game){ g_in_game = 1; pop_inject_menu(1001, 1); }   /* File > New Game */
         break;
     case M_RESTART: if(g_in_game){ g_menu_open = 0; pop_inject_menu(1003, 7); } break;   /* Game > Restart Level */
+    case M_SAVE: case M_LOAD:
+        if(dir){ g_slot = (g_slot - 1 + dir + 9) % 9 + 1; break; }
+        pop_state_request(i == M_SAVE ? 1 : 2, g_slot);
+        g_menu_open = 0;                    /* done at the top of the game's next frame */
+        break;
     case M_SOUND: S.sound = !S.sound; pop_inject_menu(1003, 2); break;   /* Game > Sounds */
     case M_MUSIC: S.music = !S.music; pop_inject_menu(1003, 3); break;   /* Game > Music  */
+    case M_GRAPHICS:
+        if(dir){ S.graphics = (S.graphics + dir + 3) % 3; cfg_save(); }
+        else if(S.graphics != g_graphics_running){ cfg_save(); plat_shutdown(); pop_restart(); }
+        break;
     case M_THEME: S.theme = (S.theme + (dir ? dir : 1) + NTHEMES) % NTHEMES; cfg_save(); break;
     case M_SCALE: S.scale += dir ? dir : 1; if(S.scale < 1) S.scale = 4; if(S.scale > 4) S.scale = 1;
                   apply_window(); cfg_save(); break;
@@ -364,6 +461,8 @@ int pop_ui_key(const void *ev){
     SDL_Keycode k = e->key.keysym.sym;
     if(k == SDLK_F11 || (k == SDLK_RETURN && (e->key.keysym.mod & KMOD_ALT))){
         S.fullscreen = !S.fullscreen; apply_window(); cfg_save(); return 1; }
+    if(k == SDLK_F5 && g_in_game){ pop_state_request(1, g_slot); g_menu_open = 0; return 1; }
+    if(k == SDLK_F9){ pop_state_request(2, g_slot); g_menu_open = 0; return 1; }
     if(!g_menu_open){
         if(k == SDLK_ESCAPE || k == SDLK_F1){ g_menu_open = 1; g_page_controls = 0; g_sel = 0; present_now(); return 1; }
         return 0;
@@ -377,7 +476,8 @@ int pop_ui_key(const void *ev){
     case SDLK_UP:   do g_sel = (g_sel + M_COUNT - 1) % M_COUNT; while(!item_enabled(g_sel)); break;
     case SDLK_DOWN: do g_sel = (g_sel + 1) % M_COUNT; while(!item_enabled(g_sel)); break;
     case SDLK_LEFT: case SDLK_RIGHT:
-        if(g_sel >= M_SOUND && g_sel <= M_SCAN) menu_activate(g_sel, k == SDLK_LEFT ? -1 : 1);
+        if(((g_sel >= M_SOUND && g_sel <= M_SCAN) || g_sel == M_SAVE || g_sel == M_LOAD) && item_enabled(g_sel))
+            menu_activate(g_sel, k == SDLK_LEFT ? -1 : 1);
         break;
     case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE: menu_activate(g_sel, 0); break;
     case SDLK_ESCAPE: case SDLK_F1: if(g_in_game) g_menu_open = 0; break;   /* at the start there is nothing to go back to */
@@ -405,7 +505,7 @@ void pop_frame(void){
         }
         pop_script_poll();
         {   const char *e = getenv("POPEXIT");           /* headless runs end on time */
-            if(e && plat_ticks() >= (uint32_t)(atof(e) * 60)) g_quit = 1; }
+            if(e && pop_wall_ticks() >= (uint32_t)(atof(e) * 60)) g_quit = 1; }
         if(g_quit){ plat_shutdown(); exit(0); }
         present_now();
         SDL_Delay(16);
@@ -433,6 +533,8 @@ static void to_logical(int wx, int wy, int *h, int *v){
 
 void plat_pump(void){
     SDL_Event e;
+    {   Rect o; int what, msg;                 /* a dialog is up: scripted keys go to it */
+        if(pop_dialog_rect(&o)) while(pop_take_key(&what, &msg)) evpush(what, msg, 0, 0); }
     while(SDL_PollEvent(&e)){
         if(e.type == SDL_QUIT){ plat_shutdown(); exit(0); }
         else if(e.type == SDL_KEYDOWN || e.type == SDL_KEYUP){
@@ -462,7 +564,13 @@ int plat_button(void){
     if(g_menu_open) return 0;
     return (SDL_GetMouseState(NULL, NULL) & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
 }
-uint32_t plat_ticks(void){ return (SDL_GetTicks() - g_start_ms) * 60u / 1000u; }
+/* The game's clock (Ticks, TickCount, VBL tasks): time since start-up, plus
+ * an offset a loaded savestate sets so Ticks carries on from where it was
+ * saved (never backwards, which the music driver would not survive). */
+static int64_t g_tick_off;
+uint32_t pop_wall_ticks(void){ return (SDL_GetTicks() - g_start_ms) * 60u / 1000u; }
+uint32_t plat_ticks(void){ return (uint32_t)((int64_t)pop_wall_ticks() + g_tick_off); }
+void pop_set_ticks(uint32_t t){ g_tick_off = (int64_t)t - (int64_t)pop_wall_ticks(); m68k_w32(0x16A, t); }
 void plat_post_event(int what, int msg){ evpush(what, msg, syn_x, syn_y); }
 void plat_inject_click(int x, int y){ syn_x = x; syn_y = y; syn_live = 1; syn_down = 30; evpush(1, 0, x, y); }
 int plat_next_event(int *what, int *msg, int *h, int *v){
