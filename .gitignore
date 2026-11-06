@@ -1,6 +1,10 @@
 # Game data: never commit (copyrighted). Bring your own copy.
 original/
 *.dc42
+*.moof
+*.woz
+*.2mg
+*.image
 *.dsk
 *.img
 *.sit
@@ -11,6 +15,9 @@ original/
 # Everything extracted from or generated out of the game
 work/
 src/gen/
+Claude outputs/
+*.wav
+*.ico
 
 # Build output
 build/
@@ -24,3 +31,6 @@ __pycache__/
 .venv/
 .vscode/
 .DS_Store
+
+# The front-end's settings (per player)
+pop1.cfg

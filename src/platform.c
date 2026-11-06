@@ -1,0 +1,481 @@
+/* platform.c - the window, the display and the recomp menu.
+ *
+ * Replaces macrecomp's platform_sdl.c (same plat_* interface, which the HAL
+ * calls) so that this recomp can have a front-end of its own:
+ *
+ *  - Whole frames only. macrecomp presented on every GetNextEvent *and*
+ *    EventAvail. PoP calls EventAvail in the middle of its frame, between
+ *    painting the play area black for a new room and copying the room in, so
+ *    a black frame reached the screen at every room change. Here the window
+ *    is presented when the game asks for its next event (pop_frame(), the top
+ *    of its loop), and otherwise at most every 100 ms (dialogs, modal loops).
+ *  - Scaling (integer, letterboxed, resizable window), fullscreen (F11 or
+ *    Alt+Enter), colour themes for the 1-bit picture, optional scanlines.
+ *  - The recomp menu (Esc or F1; open at start-up): start or resume the game,
+ *    restart the level, sound and music, display settings, controls, quit.
+ *    It is drawn over the game in the game's own "Persian" font (FONT 25616)
+ *    and pauses the game while it is open. Settings live in pop1.cfg next to
+ *    the work/ folder.
+ *
+ * Game commands from the menu go in as the game's own menu choices
+ * (pop_inject_menu), exactly as if picked from the Mac menu bar. */
+#include "macrecomp/m68k.h"
+#include "macrecomp/toolbox.h"
+#include "pop1.h"
+#include "../ext/macrecomp/runtime/font5x7.h"
+#include <SDL.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define W QD_W
+#define H QD_H
+
+static SDL_Window *g_win;
+static SDL_Renderer *g_ren;
+static SDL_Texture *g_tex, *g_ui;
+static uint32_t g_start_ms, g_last_present;
+static uint32_t g_px[W * H], g_uipx[W * H];
+
+/* ---- settings ---- */
+typedef struct { const char *name; uint32_t ink, paper; } Theme;   /* ink = a set bit */
+static const Theme THEMES[] = {
+    { "Macintosh", 0xFF000000, 0xFFFFFFFF },
+    { "Amber",     0xFF140B00, 0xFFFFB347 },
+    { "Phosphor",  0xFF001208, 0xFF5CFF8A },
+    { "Parchment", 0xFF2A1E12, 0xFFF1E4C6 },
+    { "Midnight",  0xFFE8ECF4, 0xFF0A1028 },
+};
+#define NTHEMES ((int)(sizeof THEMES / sizeof *THEMES))
+static struct { int theme, scale, fullscreen, scanlines, sound, music; } S = { 0, 2, 0, 0, 1, 1 };
+
+static void cfg_path(char *out, size_t n){ snprintf(out, n, "%s/../pop1.cfg", pop_work_dir()); }
+static void cfg_load(void){
+    char p[1200]; cfg_path(p, sizeof p);
+    FILE *f = fopen(p, "rb"); if(!f) return;
+    char line[128];
+    while(fgets(line, sizeof line, f)){
+        int v; char k[32];
+        if(sscanf(line, "%31[a-z] = %d", k, &v) != 2) continue;
+        if(!strcmp(k, "theme") && v >= 0 && v < NTHEMES) S.theme = v;
+        else if(!strcmp(k, "scale") && v >= 1 && v <= 6) S.scale = v;
+        else if(!strcmp(k, "fullscreen")) S.fullscreen = v != 0;
+        else if(!strcmp(k, "scanlines")) S.scanlines = v != 0;
+    }
+    fclose(f);
+}
+static void cfg_save(void){
+    char p[1200]; cfg_path(p, sizeof p);
+    FILE *f = fopen(p, "wb"); if(!f) return;
+    fprintf(f, "# Prince of Persia recomp settings\ntheme = %d\nscale = %d\nfullscreen = %d\nscanlines = %d\n",
+            S.theme, S.scale, S.fullscreen, S.scanlines);
+    fclose(f);
+}
+
+/* ---- the game's own font (Mac FONT resource) ---- */
+static struct { const uint8_t *bits; int rowbytes, height, ascent, first, last, kern;
+                const uint8_t *loc, *ow; int ok; } F;
+static void font_load(void){
+    int len; const uint8_t *b = pop_res("FONT", 25616, &len);
+    if(!b || len < 26) return;
+    #define BE16(p) ((int)(int16_t)((p)[0] << 8 | (p)[1]))
+    F.first = BE16(b + 2); F.last = BE16(b + 4);
+    F.kern = BE16(b + 8); F.height = BE16(b + 14); F.ascent = BE16(b + 18);
+    int owTLoc = BE16(b + 16), rowWords = BE16(b + 24);
+    F.rowbytes = rowWords * 2;
+    F.bits = b + 26;
+    F.loc = F.bits + F.rowbytes * F.height;
+    F.ow = b + 16 + owTLoc * 2;              /* offset/width table: owTLoc words from its own field */
+    int nchars = F.last - F.first + 3;
+    F.ok = (F.loc + nchars * 2 <= b + len) && F.height > 0 && F.height < 64;
+}
+/* glyph c: image columns [x0,x1) of the strike, pen advance, left offset */
+static int glyph(int c, int *x0, int *x1, int *adv, int *off){
+    if(!F.ok || c < F.first || c > F.last) return 0;
+    int i = c - F.first;
+    const uint8_t *ow = F.ow + i * 2;
+    if(ow[0] == 0xFF && ow[1] == 0xFF) return 0;      /* missing */
+    *x0 = BE16(F.loc + i * 2); *x1 = BE16(F.loc + i * 2 + 2);
+    *off = ow[0]; *adv = ow[1];
+    return 1;
+}
+/* "Persian" is a capitals-only display face: lower case is drawn as upper
+ * case, and anything it lacks (digits, most punctuation) in the 5x7 font at
+ * double size. */
+static int pchar(int c){ int a, b, adv, off; return glyph(c, &a, &b, &adv, &off) ? c :
+                          (c >= 'a' && c <= 'z' && glyph(c - 32, &a, &b, &adv, &off)) ? c - 32 : -1; }
+static int text_width(const char *s){
+    int w = 0;
+    for(; *s; s++){ int a, b, adv, off, c = pchar((unsigned char)*s);
+        if(c >= 0 && glyph(c, &a, &b, &adv, &off)) w += adv; else w += 12; }
+    return w;
+}
+
+/* ---- drawing into the UI layer (ARGB, blended over the game) ---- */
+static void ui_clear(void){ memset(g_uipx, 0, sizeof g_uipx); }
+static void ui_rect(int x, int y, int w, int h, uint32_t c){
+    for(int j = y; j < y + h; j++) if(j >= 0 && j < H)
+        for(int i = x; i < x + w; i++) if(i >= 0 && i < W) g_uipx[j * W + i] = c;
+}
+static void ui_hline(int x, int y, int w, uint32_t c){ ui_rect(x, y, w, 1, c); }
+static void ui_vline(int x, int y, int h, uint32_t c){ ui_rect(x, y, 1, h, c); }
+/* Text in the game's font; returns the width. y is the top of the line. */
+static int ui_text(int x, int y, const char *s, uint32_t c){
+    int x0 = x; uint32_t c2 = c;
+    for(; *s; s++){
+        int a, b, adv, off, ch = pchar((unsigned char)*s);
+        if(ch < 0 || !glyph(ch, &a, &b, &adv, &off)){         /* 5x7 at 2x */
+            int c = (unsigned char)*s;
+            if(c >= FONT_FIRST && c <= FONT_LAST){
+                const uint8_t *g = FONT5X7[c - FONT_FIRST];
+                for(int col = 0; col < FONT_COLS; col++) for(int row = 0; row < 8; row++)
+                    if((g[col] >> row) & 1) for(int dy = 0; dy < 2; dy++) for(int dx = 0; dx < 2; dx++){
+                        int px = x + col * 2 + dx, py = y + 1 + row * 2 + dy;
+                        if(px >= 0 && px < W && py >= 0 && py < H) g_uipx[py * W + px] = c2; }
+            }
+            x += 12; continue;
+        }
+        for(int row = 0; row < F.height; row++)
+            for(int col = a; col < b; col++)
+                if((F.bits[row * F.rowbytes + (col >> 3)] >> (7 - (col & 7))) & 1){
+                    int px = x + F.kern + off + (col - a), py = y + row;
+                    if(px >= 0 && px < W && py >= 0 && py < H) g_uipx[py * W + px] = c;
+                }
+        x += adv;
+    }
+    return x - x0;
+}
+static void ui_text_center(int cx, int y, const char *s, uint32_t c){ ui_text(cx - text_width(s) / 2, y, s, c); }
+/* Small text in the 5x7 font. */
+static int ui_small(int x, int y, const char *s, uint32_t c){
+    int x0 = x;
+    for(; *s; s++){
+        int ch = (unsigned char)*s;
+        if(ch >= FONT_FIRST && ch <= FONT_LAST){
+            const uint8_t *g = FONT5X7[ch - FONT_FIRST];
+            for(int col = 0; col < FONT_COLS; col++) for(int row = 0; row < 8; row++)
+                if((g[col] >> row) & 1){ int px = x + col, py = y + row;
+                    if(px >= 0 && px < W && py >= 0 && py < H) g_uipx[py * W + px] = c; }
+        }
+        x += 6;
+    }
+    return x - x0;
+}
+static void ui_small_center(int cx, int y, const char *s, uint32_t c){ ui_small(cx - (int)strlen(s) * 3, y, s, c); }
+
+/* ---- the menu ---- */
+enum { M_GAME, M_RESTART, M_SOUND, M_MUSIC, M_THEME, M_SCALE, M_FULL, M_SCAN, M_CONTROLS, M_QUIT, M_COUNT };
+static int g_menu_open, g_sel, g_page_controls, g_in_game, g_quit;
+
+int pop_ui_menu_open(void){ return g_menu_open; }
+
+static const char *item_label(int i, char *buf, size_t n){
+    switch(i){
+    case M_GAME:     return g_in_game ? "Resume" : "Start Game";
+    case M_RESTART:  return "Restart Level";
+    case M_SOUND:    snprintf(buf, n, "Sound Effects   %s", S.sound ? "On" : "Off"); return buf;
+    case M_MUSIC:    snprintf(buf, n, "Music   %s", S.music ? "On" : "Off"); return buf;
+    case M_THEME:    snprintf(buf, n, "Display   %s", THEMES[S.theme].name); return buf;
+    case M_SCALE:    snprintf(buf, n, "Window Size   %dx", S.scale); return buf;
+    case M_FULL:     snprintf(buf, n, "Fullscreen   %s", S.fullscreen ? "On" : "Off"); return buf;
+    case M_SCAN:     snprintf(buf, n, "Scanlines   %s", S.scanlines ? "On" : "Off"); return buf;
+    case M_CONTROLS: return "Controls";
+    case M_QUIT:     return "Quit";
+    }
+    return "";
+}
+static int item_enabled(int i){ return !(i == M_RESTART && !g_in_game); }
+
+static const uint32_t GOLD = 0xFFE8B84A, GOLD_DIM = 0xFF8C6A22, CREAM = 0xFFF4E9D0,
+                      GREY = 0xFF8A8478, PANEL = 0xE6100C08, SHADE = 0x99000000, SEL = 0xFF2A1F0E;
+
+static void draw_frame(int x, int y, int w, int h){
+    ui_rect(x, y, w, h, PANEL);
+    ui_hline(x, y, w, GOLD); ui_hline(x, y + h - 1, w, GOLD);
+    ui_vline(x, y, h, GOLD); ui_vline(x + w - 1, y, h, GOLD);
+    ui_hline(x + 3, y + 3, w - 6, GOLD_DIM); ui_hline(x + 3, y + h - 4, w - 6, GOLD_DIM);
+    ui_vline(x + 3, y + 3, h - 6, GOLD_DIM); ui_vline(x + w - 4, y + 3, h - 6, GOLD_DIM);
+    /* corner jewels */
+    int cx[4] = { x, x + w - 1, x, x + w - 1 }, cy[4] = { y, y, y + h - 1, y + h - 1 };
+    for(int k = 0; k < 4; k++) for(int d = -3; d <= 3; d++){
+        int e = 3 - (d < 0 ? -d : d);
+        for(int q = -e; q <= e; q++){ int px = cx[k] + d, py = cy[k] + q;
+            if(px >= 0 && px < W && py >= 0 && py < H) g_uipx[py * W + px] = GOLD; }
+    }
+}
+
+static void draw_menu(void){
+    ui_clear();
+    ui_rect(0, 0, W, H, SHADE);
+    int pw = 300, ph = 304, px = (W - pw) / 2, py = (H - ph) / 2;
+    draw_frame(px, py, pw, ph);
+    ui_text_center(W / 2, py + 10, "Prince of Persia", GOLD);
+    ui_small_center(W / 2, py + 33, "STATIC RECOMPILATION  -  68K MAC TO NATIVE", GREY);
+    ui_hline(px + 30, py + 45, pw - 60, GOLD_DIM);
+    if(g_page_controls){
+        static const char *rows[][2] = {
+            { "Run / turn",        "Left / Right arrows" },
+            { "Jump up / climb",   "Up arrow" },
+            { "Crouch / step down","Down arrow" },
+            { "Grab, hold, sword", "Shift" },
+            { "Careful step",      "Shift + arrow" },
+            { "Strike / block",    "Shift / Up (sword)" },
+            { "Also: numeric keypad 7 8 9 4 6 1 2 3", "" },
+            { "or letters  w e r / s d f, u i o / j k l", "" },
+            { "New game",          "Ctrl+N" },
+            { "This menu",         "Esc or F1" },
+            { "Fullscreen",        "F11 or Alt+Enter" },
+        };
+        int y = py + 56;
+        for(unsigned i = 0; i < sizeof rows / sizeof *rows; i++, y += 17){
+            ui_small(px + 24, y, rows[i][0], rows[i][1][0] ? CREAM : GREY);
+            if(rows[i][1][0]) ui_small(px + pw - 24 - (int)strlen(rows[i][1]) * 6, y, rows[i][1], GOLD);
+        }
+        ui_small_center(W / 2, py + ph - 18, "ENTER OR ESC: BACK", GREY);
+        return;
+    }
+    int y = py + 52;
+    for(int i = 0; i < M_COUNT; i++, y += 22){
+        char buf[64]; const char *l = item_label(i, buf, sizeof buf);
+        uint32_t c = !item_enabled(i) ? 0xFF4A443A : (i == g_sel ? GOLD : CREAM);
+        if(i == g_sel){
+            ui_rect(px + 14, y - 1, pw - 28, 21, SEL);
+            for(int k = 0; k < 6; k++) ui_vline(px + 22 + k, y + 4 + k, 12 - 2 * k, GOLD);  /* > */
+        }
+        ui_text_center(W / 2, y, l, c);
+    }
+    ui_small_center(W / 2, py + ph - 18, "UP/DOWN CHOOSE  LEFT/RIGHT CHANGE  ENTER SELECT", GREY);
+}
+
+/* ---- the window ---- */
+static void apply_window(void){
+    if(!g_win) return;
+    SDL_SetWindowFullscreen(g_win, S.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    if(!S.fullscreen){
+        SDL_SetWindowSize(g_win, W * S.scale, H * S.scale);
+        SDL_SetWindowPosition(g_win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
+}
+
+int plat_open(const char *title, int scale){
+    (void)scale; (void)title;
+    cfg_load();
+    font_load();
+    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0){ fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");       /* crisp pixels */
+    g_win = SDL_CreateWindow("Prince of Persia \xE2\x80\x94 recompiled", SDL_WINDOWPOS_CENTERED,
+                             SDL_WINDOWPOS_CENTERED, W * S.scale, H * S.scale, SDL_WINDOW_RESIZABLE);
+    if(!g_win){ fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
+    SDL_SetWindowMinimumSize(g_win, W, H);
+    g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_ACCELERATED);
+    if(!g_ren) g_ren = SDL_CreateRenderer(g_win, -1, 0);
+    if(!g_ren){ fprintf(stderr, "renderer: %s\n", SDL_GetError()); return 1; }
+    g_tex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, W, H);
+    g_ui  = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, W, H);
+    SDL_SetTextureBlendMode(g_ui, SDL_BLENDMODE_BLEND);
+    g_start_ms = SDL_GetTicks();
+    if(S.fullscreen) apply_window();
+    g_menu_open = getenv("POPNOMENU") ? 0 : 1;              /* the start menu */
+    return (g_tex && g_ui) ? 0 : 1;
+}
+
+static SDL_Rect dest_rect(void){
+    int ww, wh; SDL_GetRendererOutputSize(g_ren, &ww, &wh);
+    int s = ww / W < wh / H ? ww / W : wh / H;
+    SDL_Rect d;
+    if(s >= 1){ d.w = W * s; d.h = H * s; }
+    else { double f = (double)ww / W < (double)wh / H ? (double)ww / W : (double)wh / H; d.w = (int)(W * f); d.h = (int)(H * f); }
+    d.x = (ww - d.w) / 2; d.y = (wh - d.h) / 2;
+    return d;
+}
+
+static void present_now(void){
+    if(!g_ren) return;
+    g_last_present = SDL_GetTicks();
+    uint32_t base = mr_screen_base();
+    const Theme *t = &THEMES[S.theme];
+    for(int y = 0; y < H; y++){
+        const uint8_t *row = M.mem + base + (uint32_t)y * (W / 8);
+        for(int x = 0; x < W; x++) g_px[y * W + x] = ((row[x >> 3] >> (7 - (x & 7))) & 1) ? t->ink : t->paper;
+    }
+    SDL_UpdateTexture(g_tex, NULL, g_px, W * 4);
+    SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255);
+    SDL_RenderClear(g_ren);
+    SDL_Rect d = dest_rect();
+    SDL_RenderCopy(g_ren, g_tex, NULL, &d);
+    if(S.scanlines && d.h >= H * 2){
+        SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 70);
+        int s = d.h / H;
+        for(int y = 0; y < H; y++){ int ly = d.y + y * s + s - 1; SDL_RenderDrawLine(g_ren, d.x, ly, d.x + d.w - 1, ly); }
+    }
+    if(g_menu_open){
+        draw_menu();
+        SDL_UpdateTexture(g_ui, NULL, g_uipx, W * 4);
+        SDL_RenderCopy(g_ren, g_ui, NULL, &d);
+    }
+    SDL_RenderPresent(g_ren);
+    if(getenv("POPUISHOT") && g_menu_open){       /* the menu as the player sees it, for headless checks */
+        static int done; const char *at = getenv("POPUISHOTAT");
+        if(!done && plat_ticks() >= (uint32_t)(60 * (at ? atof(at) : 0))){ done = 1;
+            FILE *f = fopen(getenv("POPUISHOT"), "wb");
+            if(f){ fprintf(f, "P6\n%d %d\n255\n", W, H);
+                for(int i = 0; i < W * H; i++){
+                    uint32_t g = g_px[i], u = g_uipx[i]; int a = (int)(u >> 24);
+                    for(int k = 16; k >= 0; k -= 8){
+                        int cg = (int)((g >> k) & 255), cu = (int)((u >> k) & 255);
+                        fputc((cu * a + cg * (255 - a)) / 255, f); }
+                }
+                fclose(f); }
+        }
+    }
+}
+
+/* macrecomp calls this from many places (every event call, dialogs): show
+ * the frame only if nothing has been shown for a while. */
+void plat_present(void){
+    if(SDL_GetTicks() - g_last_present >= 100 && !pop_update_owed()) present_now();
+}
+
+/* ---- menu actions ---- */
+static void menu_activate(int i, int dir){
+    switch(i){
+    case M_GAME:
+        g_menu_open = 0;
+        if(!g_in_game){ g_in_game = 1; pop_inject_menu(1001, 1); }   /* File > New Game */
+        break;
+    case M_RESTART: if(g_in_game){ g_menu_open = 0; pop_inject_menu(1003, 7); } break;   /* Game > Restart Level */
+    case M_SOUND: S.sound = !S.sound; pop_inject_menu(1003, 2); break;   /* Game > Sounds */
+    case M_MUSIC: S.music = !S.music; pop_inject_menu(1003, 3); break;   /* Game > Music  */
+    case M_THEME: S.theme = (S.theme + (dir ? dir : 1) + NTHEMES) % NTHEMES; cfg_save(); break;
+    case M_SCALE: S.scale += dir ? dir : 1; if(S.scale < 1) S.scale = 4; if(S.scale > 4) S.scale = 1;
+                  apply_window(); cfg_save(); break;
+    case M_FULL: S.fullscreen = !S.fullscreen; apply_window(); cfg_save(); break;
+    case M_SCAN: S.scanlines = !S.scanlines; cfg_save(); break;
+    case M_CONTROLS: g_page_controls = 1; break;
+    case M_QUIT: g_quit = 1; break;
+    }
+}
+
+/* Every SDL key event goes through here first. 1 = the front-end used it. */
+int pop_ui_key(const void *ev){
+    const SDL_Event *e = (const SDL_Event *)ev;
+    if(e->type != SDL_KEYDOWN) return g_menu_open;     /* key-ups: swallowed while the menu is up */
+    SDL_Keycode k = e->key.keysym.sym;
+    if(k == SDLK_F11 || (k == SDLK_RETURN && (e->key.keysym.mod & KMOD_ALT))){
+        S.fullscreen = !S.fullscreen; apply_window(); cfg_save(); return 1; }
+    if(!g_menu_open){
+        if(k == SDLK_ESCAPE || k == SDLK_F1){ g_menu_open = 1; g_page_controls = 0; g_sel = 0; present_now(); return 1; }
+        return 0;
+    }
+    if(e->key.repeat && k != SDLK_UP && k != SDLK_DOWN) return 1;
+    if(g_page_controls){
+        if(k == SDLK_ESCAPE || k == SDLK_RETURN || k == SDLK_SPACE || k == SDLK_F1) g_page_controls = 0;
+        present_now(); return 1;
+    }
+    switch(k){
+    case SDLK_UP:   do g_sel = (g_sel + M_COUNT - 1) % M_COUNT; while(!item_enabled(g_sel)); break;
+    case SDLK_DOWN: do g_sel = (g_sel + 1) % M_COUNT; while(!item_enabled(g_sel)); break;
+    case SDLK_LEFT: case SDLK_RIGHT:
+        if(g_sel >= M_SOUND && g_sel <= M_SCAN) menu_activate(g_sel, k == SDLK_LEFT ? -1 : 1);
+        break;
+    case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE: menu_activate(g_sel, 0); break;
+    case SDLK_ESCAPE: case SDLK_F1: if(g_in_game) g_menu_open = 0; break;   /* at the start there is nothing to go back to */
+    default: break;
+    }
+    present_now();
+    return 1;
+}
+
+/* Called at the top of every game frame (GetNextEvent/WaitNextEvent): show
+ * the frame, and while the menu is open in a game, hold the game here. */
+void pop_frame(void){
+    if(g_quit){ plat_shutdown(); exit(0); }
+    /* Hold the last whole frame while the game owes itself an update (it has
+     * blanked the play area for a new room), for at most three frames. */
+    static int held;
+    if(pop_update_owed() && !g_menu_open && held < 3) held++;
+    else { held = 0; present_now(); }
+    while(g_menu_open && g_in_game){
+        SDL_Event e;
+        while(SDL_PollEvent(&e)){
+            if(e.type == SDL_QUIT){ plat_shutdown(); exit(0); }
+            if(e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) pop_ui_key(&e);
+            if(e.type == SDL_WINDOWEVENT) present_now();
+        }
+        pop_script_poll();
+        {   const char *e = getenv("POPEXIT");           /* headless runs end on time */
+            if(e && plat_ticks() >= (uint32_t)(atof(e) * 60)) g_quit = 1; }
+        if(g_quit){ plat_shutdown(); exit(0); }
+        present_now();
+        SDL_Delay(16);
+    }
+}
+void pop_note_new_game(void){ g_in_game = 1; g_menu_open = 0; }
+
+/* ---- input plumbing the HAL uses ---- */
+#define EVQ 64
+static struct { int what, msg, h, v; } evq[EVQ];
+static int evhead, evtail;
+static int syn_x, syn_y, syn_down, syn_live;
+static void evpush(int what, int msg, int h, int v){
+    int n = (evtail + 1) % EVQ; if(n == evhead) return;
+    evq[evtail].what = what; evq[evtail].msg = msg; evq[evtail].h = h; evq[evtail].v = v; evtail = n;
+}
+static void to_logical(int wx, int wy, int *h, int *v){
+    SDL_Rect d = dest_rect();
+    int ww, wh; SDL_GetWindowSize(g_win, &ww, &wh);
+    int ow, oh; SDL_GetRendererOutputSize(g_ren, &ow, &oh);
+    double sx = ww ? (double)ow / ww : 1, sy = wh ? (double)oh / wh : 1;   /* high-DPI */
+    *h = d.w ? (int)((wx * sx - d.x) * W / d.w) : 0;
+    *v = d.h ? (int)((wy * sy - d.y) * H / d.h) : 0;
+}
+
+void plat_pump(void){
+    SDL_Event e;
+    while(SDL_PollEvent(&e)){
+        if(e.type == SDL_QUIT){ plat_shutdown(); exit(0); }
+        else if(e.type == SDL_KEYDOWN || e.type == SDL_KEYUP){
+            /* Normally src/input.c has already taken the keys; these are the
+             * ones that arrive while macrecomp runs a modal loop (a dialog). */
+            if(pop_ui_key(&e)) continue;
+            if(e.type == SDL_KEYDOWN && !e.key.repeat){
+                int msg = pop_mac_key_message(e.key.keysym.scancode);
+                if(msg >= 0) evpush(3, msg, 0, 0);
+            }
+        }
+        else if(g_menu_open) continue;
+        else if(e.type == SDL_MOUSEBUTTONDOWN){ int h, v; to_logical(e.button.x, e.button.y, &h, &v); evpush(1, 0, h, v); }
+        else if(e.type == SDL_MOUSEBUTTONUP){ int h, v; to_logical(e.button.x, e.button.y, &h, &v); evpush(2, 0, h, v); }
+        else if(e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_EXPOSED) present_now();
+    }
+}
+int plat_quit_requested(void){ return g_quit; }
+void plat_get_mouse(int *h, int *v){
+    if(syn_live){ if(h) *h = syn_x; if(v) *v = syn_y; return; }
+    int x, y; SDL_GetMouseState(&x, &y);
+    int lh = 0, lv = 0; if(g_ren) to_logical(x, y, &lh, &lv);
+    if(h) *h = lh; if(v) *v = lv;
+}
+int plat_button(void){
+    if(syn_live){ if(syn_down > 0 && !--syn_down){ evpush(2, 0, syn_x, syn_y); syn_live = 0; return 0; } return 1; }
+    if(g_menu_open) return 0;
+    return (SDL_GetMouseState(NULL, NULL) & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+}
+uint32_t plat_ticks(void){ return (SDL_GetTicks() - g_start_ms) * 60u / 1000u; }
+void plat_post_event(int what, int msg){ evpush(what, msg, syn_x, syn_y); }
+void plat_inject_click(int x, int y){ syn_x = x; syn_y = y; syn_live = 1; syn_down = 30; evpush(1, 0, x, y); }
+int plat_next_event(int *what, int *msg, int *h, int *v){
+    if(evhead == evtail){ if(what) *what = 0; return 0; }
+    if(what) *what = evq[evhead].what; if(msg) *msg = evq[evhead].msg;
+    if(h) *h = evq[evhead].h; if(v) *v = evq[evhead].v;
+    evhead = (evhead + 1) % EVQ; return 1;
+}
+void plat_shutdown(void){
+    if(g_ui) SDL_DestroyTexture(g_ui);
+    if(g_tex) SDL_DestroyTexture(g_tex);
+    if(g_ren) SDL_DestroyRenderer(g_ren);
+    if(g_win) SDL_DestroyWindow(g_win);
+    g_ui = g_tex = NULL; g_ren = NULL; g_win = NULL;
+    SDL_Quit();
+}
