@@ -682,3 +682,45 @@ pixels pure); Original gives 1280×960, exact 2×. Window choices on a
 1008×728 usable area: Original 640×480; Remastered 640×480 and 960×720.
 The real game (Linux build, virtual 1920×1080 screen, fullscreen, level 1):
 Remastered fills 1440×1080, Original 1280×960. Not yet run on Windows.
+
+## 2026-11-07 — Step 23: Crop Borders, AdvMAME 4x and xBR 4x
+
+Rufus's fullscreen screenshot (1920×1080, Windows): the DPI fix works, the
+picture is 1440×1080. The black above and below is the game's own: the
+colour game draws in a band of its 8-bit screen only.
+
+**Crop Borders.** Measured with a temporary hook (bounding box of all
+non-black pixels per frame) over 75 s of intro, title, story and attract
+play: Colour 640×480 draws only in rows 40–439, LC 512×384 only in rows
+25–344, B&W uses its whole screen. `view_rect()` gives the part shown:
+that band when *Crop Borders* is on (default) in a colour mode, widened to
+take in a dialog while one is up. Everything sizing the picture now works
+from it: `dest_rect`, the window sizes (Auto, the fixed sizes, the minimum),
+the source rectangle copied to the window (in Original from the game
+texture, in Remastered from the 4× stage), scanlines, the mouse
+(`to_logical`), and the menu and toasts, which are centred in it. On a
+1080p screen the colour picture goes from 1440×1080 to 1728×1080.
+
+The menu still shows 13 rows: *Display* (the B&W themes) is only shown in
+B&W and *Crop Borders* only in colour (`item_visible`). In the cropped LC
+picture (320 rows) the rows shrink from 20 to 18 lines so it fits.
+
+**Filters** (`src/filters.c`, new): two more Looks after *Remastered*.
+- *AdvMAME 4x*: Scale2x twice. Exact colour matches only, no new colours.
+- *xBR 4x*: Hyllian's xBR (MIT), level-2 rules, written for this project:
+  edge strength along both diagonals from a brightness-weighted YUV
+  difference, then the corner of each pixel blended towards the colour
+  across the edge (shallow, steep and 45° patterns in the 4×4 block).
+  Chosen over HQ4x, whose reference code is LGPL.
+They run on the CPU into a 4× buffer that is uploaded to a texture and
+drawn into the stage instead of the nearest copy (`filter_into_stage`).
+Only the rows that changed since the last frame, widened by 2 (the
+filters' reach), are filtered and uploaded. Full frame, one core here:
+AdvMAME 4.6 ms, xBR 26 ms; a room change is the only full frame, and the
+game draws about every 80 ms. The menu is still drawn after the filter.
+
+New debug knob: `POPWINSHOT=out.ppm POPWINSHOTAT=s` saves the final
+window picture (Xvfb screen grabs only showed parts of it). Checked at
+1920×1080 fullscreen with the real game: Colour cropped 1728×1080 in
+Remastered and xBR, uncropped 1440×1080 in AdvMAME; the menu in cropped
+LC and in B&W.

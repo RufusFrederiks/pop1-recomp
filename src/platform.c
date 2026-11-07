@@ -33,6 +33,7 @@
 #include "macrecomp/m68k.h"
 #include "macrecomp/toolbox.h"
 #include "pop1.h"
+#include "filters.h"
 #include "../ext/macrecomp/runtime/font5x7.h"
 #include <SDL.h>
 #include <stdio.h>
@@ -49,6 +50,9 @@ static SDL_Window *g_win;
 static SDL_Renderer *g_ren;
 static SDL_Texture *g_tex, *g_ui;
 static SDL_Texture *g_big;                 /* Remastered: the 4x stage (a render target) */
+static SDL_Texture *g_ftex;                /* a CPU filter's 4x output, copied into the stage */
+static uint32_t *g_fout, *g_prev;          /* that output, and the game frame it was made from */
+static int g_prev_look = -1;               /* the filter g_fout holds; -1 = nothing yet */
 static int g_bigk;                         /* its factor (4, less on very old GPUs); 0 = not made yet, -1 = unavailable */
 static uint32_t g_start_ms, g_last_present;
 static uint32_t g_px[MAXW * MAXH], g_uipx[MAXW * MAXH];
@@ -64,14 +68,16 @@ static const Theme THEMES[] = {
 };
 #define NTHEMES ((int)(sizeof THEMES / sizeof *THEMES))
 /* win: the window size, 0 = Auto (largest that fits), else in half steps of
- * the picture (2 = 1x, 3 = 1.5x, ...). look: an index into LOOKS. */
-static struct { int theme, win, fullscreen, scanlines, sound, music, graphics, look; } S = { 0, 0, 0, 0, 1, 1, 1, 1 };
+ * the picture (2 = 1x, 3 = 1.5x, ...). look: an index into LOOKS. crop: leave
+ * out the rows the colour game never draws in (see view_rect). */
+static struct { int theme, win, fullscreen, scanlines, sound, music, graphics, look, crop; } S = { 0, 0, 0, 0, 1, 1, 1, 1, 1 };
 static const char *GRAPHICS[] = { "B&W", "Colour", "LC Colour" };
-/* The looks. New filters for the 4x stage are added after "Remastered"
- * (e.g. "Remastered AdvMAME", "Remastered HQ4x"); everything from index 1
- * on is drawn through the 4x stage. */
-enum { LOOK_ORIGINAL, LOOK_REMASTERED };
-static const char *LOOKS[] = { "Original", "Remastered" };
+/* The looks. Everything from index 1 on is drawn through the 4x stage;
+ * the filter decides how the game frame gets to 4x (see filter_into_stage). */
+enum { LOOK_ORIGINAL, LOOK_REMASTERED, LOOK_ADVMAME, LOOK_XBR };
+static const char *LOOKS[] = { "Original", "Remastered", "AdvMAME 4x", "xBR 4x" };
+static const char *LOOK_HINT[] = { "WHOLE PIXELS, LIKE THE MAC", "SHARP PIXELS SCALED 4X TO FILL THE SCREEN",
+                                   "SMOOTHED DIAGONALS, STILL PIXEL ART", "SMOOTH CURVES AND EDGES" };
 #define NLOOKS ((int)(sizeof LOOKS / sizeof *LOOKS))
 #define REMASTERED (S.look != LOOK_ORIGINAL)
 #define MAXWIN 16
@@ -89,6 +95,7 @@ static void cfg_load(void){
         if(!strcmp(k, "theme") && v >= 0 && v < NTHEMES) S.theme = v;
         else if(!strcmp(k, "window") && v >= 0 && v <= MAXWIN) S.win = v;   /* the old "scale" is ignored: Auto fits better */
         else if(!strcmp(k, "look") && v >= 0 && v < NLOOKS) S.look = v;
+        else if(!strcmp(k, "crop")) S.crop = v != 0;
         else if(!strcmp(k, "fullscreen")) S.fullscreen = v != 0;
         else if(!strcmp(k, "scanlines")) S.scanlines = v != 0;
         else if(!strcmp(k, "graphics") && v >= 0 && v <= 2) S.graphics = v;
@@ -99,10 +106,11 @@ static void cfg_save(void){
     char p[1200]; cfg_path(p, sizeof p);
     FILE *f = fopen(p, "wb"); if(!f) return;
     fprintf(f, "# Prince of Persia recomp settings\n# graphics: 0 black-and-white, 1 colour (640x480), 2 LC colour (512x384)\n"
-               "# look: 0 original (whole-number scaling), 1 remastered (4x, fills the screen)\n"
+               "# look: 0 original (whole-number scaling), 1 remastered (4x, fills the screen), 2 advmame 4x, 3 xbr 4x\n"
+               "# crop: 1 = leave out the black rows the colour game never draws in\n"
                "# window: 0 auto (largest that fits), else the size in half steps (2 = 1x, 3 = 1.5x, ...)\n"
-               "graphics = %d\nlook = %d\ntheme = %d\nwindow = %d\nfullscreen = %d\nscanlines = %d\n",
-            S.graphics, S.look, S.theme, S.win, S.fullscreen, S.scanlines);
+               "graphics = %d\nlook = %d\ncrop = %d\ntheme = %d\nwindow = %d\nfullscreen = %d\nscanlines = %d\n",
+            S.graphics, S.look, S.crop, S.theme, S.win, S.fullscreen, S.scanlines);
     fclose(f);
 }
 
@@ -216,13 +224,20 @@ static void ui_small_center(int cx, int y, const char *s, uint32_t c){ ui_small(
 
 /* ---- the menu ---- */
 /* M_SIZE is one row for Fullscreen / Window Auto / the window sizes that
- * fit, which keeps 13 rows: the menu has to fit the 342-line B&W screen. */
-enum { M_GAME, M_RESTART, M_SAVE, M_LOAD, M_SOUND, M_MUSIC, M_GRAPHICS, M_LOOK, M_THEME, M_SIZE, M_SCAN, M_CONTROLS, M_QUIT, M_COUNT };
+ * fit. Display (the B&W themes) is only shown in B&W and Crop Borders only
+ * in colour, so 13 rows are shown: the menu has to fit the 342-line B&W
+ * screen, and the 320 rows of the cropped LC screen (rows shrink there). */
+enum { M_GAME, M_RESTART, M_SAVE, M_LOAD, M_SOUND, M_MUSIC, M_GRAPHICS, M_LOOK, M_THEME, M_SIZE, M_CROP, M_SCAN, M_CONTROLS, M_QUIT, M_COUNT };
 static void window_size(int *w, int *h);
+static SDL_Rect g_view;                    /* the part of the picture shown (view_rect) */
 static int g_menu_open, g_sel, g_page_controls, g_in_game, g_quit;
 static int g_slot = 1;                     /* the savestate slot (1-9) */
 static char g_toast[96]; static uint32_t g_toast_until;
-#define ROW (M_COUNT > 11 ? 20 : 22)
+static int item_visible(int i){ return !(i == M_THEME && g_graphics_running) && !(i == M_CROP && !g_graphics_running); }
+static int n_visible(void){ int n = 0; for(int i = 0; i < M_COUNT; i++) n += item_visible(i); return n; }
+/* Row height: 20, less if the shown part of the screen is short. */
+static int row_h(void){ int r = (g_view.h - 78) / n_visible(); return r > 20 ? 20 : r < 16 ? 16 : r; }
+#define ROW row_h()
 
 int pop_ui_menu_open(void){ return g_menu_open; }
 
@@ -239,6 +254,7 @@ static const char *item_label(int i, char *buf, size_t n){
     case M_THEME:    if(g_graphics_running) return "Display   Colour";
                      snprintf(buf, n, "Display   %s", THEMES[S.theme].name); return buf;
     case M_LOOK:     snprintf(buf, n, "Look   %s", LOOKS[S.look]); return buf;
+    case M_CROP:     snprintf(buf, n, "Crop Borders   %s", S.crop ? "On" : "Off"); return buf;
     case M_SIZE:     if(S.fullscreen) return "Size   Fullscreen";
                      if(!S.win) return "Size   Window Auto";
                      { int w, h; window_size(&w, &h); snprintf(buf, n, "Size   %d x %d", w, h); } return buf;
@@ -248,7 +264,7 @@ static const char *item_label(int i, char *buf, size_t n){
     }
     return "";
 }
-static int item_enabled(int i){ return !((i == M_RESTART || i == M_SAVE) && !g_in_game) && !(i == M_THEME && g_graphics_running); }
+static int item_enabled(int i){ return item_visible(i) && !((i == M_RESTART || i == M_SAVE) && !g_in_game); }
 
 static const uint32_t GOLD = 0xFFE8B84A, GOLD_DIM = 0xFF8C6A22, CREAM = 0xFFF4E9D0,
                       GREY = 0xFF8A8478, PANEL = 0xE6100C08, SHADE = 0x99000000, SEL = 0xFF2A1F0E;
@@ -271,7 +287,8 @@ static void draw_frame(int x, int y, int w, int h){
 static void draw_menu(void){
     ui_clear();
     ui_rect(0, 0, W, H, SHADE);
-    int pw = 300, ph = 52 + ROW * M_COUNT + 26, px = (W - pw) / 2, py = (H - ph) / 2;
+    int row = ROW, pw = 300, ph = 52 + row * n_visible() + 26, px = (W - pw) / 2, py = g_view.y + (g_view.h - ph) / 2;
+    if(g_page_controls){ ph = 52 + 17 * 12 + 26; py = g_view.y + (g_view.h - ph) / 2; }
     draw_frame(px, py, pw, ph);
     ui_text_center(W / 2, py + 10, "Prince of Persia", GOLD);
     ui_small_center(W / 2, py + 33, "STATIC RECOMPILATION  -  68K MAC TO NATIVE", GREY);
@@ -300,14 +317,16 @@ static void draw_menu(void){
         return;
     }
     int y = py + 52;
-    for(int i = 0; i < M_COUNT; i++, y += ROW){
+    for(int i = 0; i < M_COUNT; i++){
+        if(!item_visible(i)) continue;
         char buf[64]; const char *l = item_label(i, buf, sizeof buf);
         uint32_t c = !item_enabled(i) ? 0xFF4A443A : (i == g_sel ? GOLD : CREAM);
         if(i == g_sel){
-            ui_rect(px + 14, y - 1, pw - 28, ROW - 1, SEL);
+            ui_rect(px + 14, y - 1, pw - 28, row - 1, SEL);
             for(int k = 0; k < 6; k++) ui_vline(px + 22 + k, y + 4 + k, 12 - 2 * k, GOLD);  /* > */
         }
-        ui_text_center(W / 2, y, l, c);
+        ui_text_center(W / 2, y + (row - 20) / 2, l, c);
+        y += row;
     }
     if(g_sel == M_GRAPHICS && S.graphics != g_graphics_running)
         ui_small_center(W / 2, py + ph - 18, "ENTER: RESTART THE GAME IN THIS MODE", GOLD);
@@ -318,7 +337,9 @@ static void draw_menu(void){
         ui_small_center(W / 2, py + ph - 18, line, GOLD);
     }
     else if(g_sel == M_LOOK)
-        ui_small_center(W / 2, py + ph - 18, REMASTERED ? "SCALED 4X, FILLS THE SCREEN" : "WHOLE PIXELS, LIKE THE MAC", GOLD);
+        ui_small_center(W / 2, py + ph - 18, LOOK_HINT[S.look], GOLD);
+    else if(g_sel == M_CROP)
+        ui_small_center(W / 2, py + ph - 18, S.crop ? "THE EMPTY BLACK ROWS LEFT OUT: A BIGGER PICTURE" : "THE WHOLE MAC SCREEN, BLACK ROWS INCLUDED", GOLD);
     else if(g_sel == M_SIZE)
         ui_small_center(W / 2, py + ph - 18, "F11 OR ALT+ENTER: FULLSCREEN", GOLD);
     else
@@ -326,6 +347,28 @@ static void draw_menu(void){
 }
 
 /* ---- the window ---- */
+/* The part of the picture that is shown. The colour game draws only in a
+ * band of its 8-bit screen and leaves the rest black, in every scene
+ * (measured over the intro, title, story and play): 640x480 -> rows 40-439,
+ * LC 512x384 -> rows 25-344. "Crop Borders" shows only that band, so the
+ * picture can be ~20% bigger. B&W uses its whole screen. While a dialog or
+ * alert is up, the band is widened to take it in. */
+static SDL_Rect view_rect(void){
+    SDL_Rect v = { 0, 0, W, H };
+    if(!S.crop || !g_graphics_running) return v;
+    if(W == 640 && H == 480){ v.y = 40; v.h = 400; }
+    else if(W == 512 && H == 384){ v.y = 25; v.h = 320; }
+    else return v;
+    Rect o;
+    if(pop_dialog_rect(&o)){
+        int top = o.top < v.y ? o.top : v.y, bot = o.bottom > v.y + v.h ? o.bottom : v.y + v.h;
+        if(top < 0) top = 0;
+        if(bot > H) bot = H;
+        v.y = top; v.h = bot - top;
+    }
+    return v;
+}
+
 /* The room a window can have on its screen: the desktop minus the taskbar
  * and the window's own frame. */
 static void usable_area(int *uw, int *uh){
@@ -336,14 +379,14 @@ static void usable_area(int *uw, int *uh){
     if(!g_win || SDL_GetWindowBordersSize(g_win, &top, &left, &bottom, &right) != 0 || top == 0){
         top = 32; left = right = bottom = 8; }                       /* a typical title bar and frame */
     *uw = r.w - left - right; *uh = r.h - top - bottom;
-    if(*uw < W) *uw = W;
-    if(*uh < H) *uh = H;
+    if(*uw < g_view.w) *uw = g_view.w;
+    if(*uh < g_view.h) *uh = g_view.h;
 }
 /* The largest fixed size that fits, in half steps (2 = 1x). Original only
  * offers whole steps. */
 static int max_halfsteps(void){
     int uw, uh; usable_area(&uw, &uh);
-    int n = 2 * uw / W < 2 * uh / H ? 2 * uw / W : 2 * uh / H;
+    int n = 2 * uw / g_view.w < 2 * uh / g_view.h ? 2 * uw / g_view.w : 2 * uh / g_view.h;
     if(!REMASTERED) n &= ~1;
     if(n > MAXWIN) n = MAXWIN;
     return n < 2 ? 2 : n;
@@ -352,19 +395,21 @@ static int max_halfsteps(void){
 static void window_size(int *w, int *h){
     if(!S.win){                              /* Auto: the largest that fits */
         int uw, uh; usable_area(&uw, &uh);
-        double f = (double)uw / W < (double)uh / H ? (double)uw / W : (double)uh / H;
+        double f = (double)uw / g_view.w < (double)uh / g_view.h ? (double)uw / g_view.w : (double)uh / g_view.h;
         if(!REMASTERED){ int s = (int)f; f = s < 1 ? 1 : s; }        /* whole steps */
-        *w = (int)(W * f); *h = (int)(H * f);
+        *w = (int)(g_view.w * f); *h = (int)(g_view.h * f);
         return;
     }
     int n = S.win, m = max_halfsteps();
     if(!REMASTERED) n &= ~1;
     if(n > m) n = m;
     if(n < 2) n = 2;
-    *w = W * n / 2; *h = H * n / 2;
+    *w = g_view.w * n / 2; *h = g_view.h * n / 2;
 }
 static void apply_window(void){
     if(!g_win) return;
+    g_view = view_rect();
+    SDL_SetWindowMinimumSize(g_win, g_view.w, g_view.h);
     SDL_SetWindowFullscreen(g_win, S.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
     if(!S.fullscreen){
         int w, h; window_size(&w, &h);
@@ -406,7 +451,8 @@ int plat_open(const char *title, int scale){
                              SDL_WINDOWPOS_CENTERED, W, H,
                              SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_HIDDEN);
     if(!g_win){ fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
-    SDL_SetWindowMinimumSize(g_win, W, H);
+    g_view = view_rect();
+    SDL_SetWindowMinimumSize(g_win, g_view.w, g_view.h);
     if(!S.fullscreen){
         int w, h; window_size(&w, &h);
         SDL_SetWindowSize(g_win, w, h);
@@ -430,11 +476,12 @@ int plat_open(const char *title, int scale){
  * keeping the picture's shape. */
 static SDL_Rect dest_rect(void){
     int ww, wh; SDL_GetRendererOutputSize(g_ren, &ww, &wh);
-    int s = ww / W < wh / H ? ww / W : wh / H;
+    int vw = g_view.w, vh = g_view.h;
+    int s = ww / vw < wh / vh ? ww / vw : wh / vh;
     SDL_Rect d;
-    if(s >= 1 && !REMASTERED){ d.w = W * s; d.h = H * s; }
-    else { double f = (double)ww / W < (double)wh / H ? (double)ww / W : (double)wh / H;
-           d.w = (int)(W * f + 0.5); d.h = (int)(H * f + 0.5); }
+    if(s >= 1 && !REMASTERED){ d.w = vw * s; d.h = vh * s; }
+    else { double f = (double)ww / vw < (double)wh / vh ? (double)ww / vw : (double)wh / vh;
+           d.w = (int)(vw * f + 0.5); d.h = (int)(vh * f + 0.5); }
     d.x = (ww - d.w) / 2; d.y = (wh - d.h) / 2;
     return d;
 }
@@ -461,17 +508,44 @@ static int big_stage(void){
     return 1;
 }
 
-/* The filter step: the game frame (g_tex) into the 4x stage. Nearest
- * neighbour is a plain copy (g_tex samples nearest). A CPU filter (AdvMAME,
- * HQ4x) would instead write g_px into a W*k x H*k buffer here and copy that
- * in. */
+/* The filter step: the game frame into the 4x stage. Remastered (nearest
+ * neighbour) is a plain copy of g_tex, which samples nearest. AdvMAME and xBR
+ * run on the CPU into g_fout, but only over the rows that changed since the
+ * last frame (plus the filter's reach), and only those rows are uploaded. */
 static void filter_into_stage(void){
-    SDL_RenderCopy(g_ren, g_tex, NULL, NULL);
+    if(S.look == LOOK_REMASTERED || g_bigk != 4){ SDL_RenderCopy(g_ren, g_tex, NULL, NULL); return; }
+    if(!g_fout){
+        g_fout = malloc((size_t)MAXW * 4 * MAXH * 4 * 4);
+        g_prev = malloc((size_t)MAXW * MAXH * 4);
+        if(!g_fout || !g_prev){ free(g_fout); free(g_prev); g_fout = g_prev = NULL; g_bigk = -1; return; }
+    }
+    if(!g_ftex){
+        g_ftex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, W * 4, H * 4);
+        if(!g_ftex){ SDL_RenderCopy(g_ren, g_tex, NULL, NULL); return; }
+        g_prev_look = -1;
+    }
+    int y0 = 0, y1 = H;
+    if(g_prev_look == S.look){                       /* the rows that changed */
+        while(y0 < H && !memcmp(g_px + y0 * W, g_prev + y0 * W, (size_t)W * 4)) y0++;
+        while(y1 > y0 && !memcmp(g_px + (y1 - 1) * W, g_prev + (y1 - 1) * W, (size_t)W * 4)) y1--;
+    }
+    if(y0 < y1){
+        y0 = y0 - FILTER_REACH < 0 ? 0 : y0 - FILTER_REACH;
+        y1 = y1 + FILTER_REACH > H ? H : y1 + FILTER_REACH;
+        if(S.look == LOOK_ADVMAME) filter_advmame4x(g_px, W, H, g_fout, y0, y1);
+        else                       filter_xbr4x(g_px, W, H, g_fout, y0, y1);
+        SDL_Rect r = { 0, y0 * 4, W * 4, (y1 - y0) * 4 };
+        SDL_UpdateTexture(g_ftex, &r, g_fout + (size_t)y0 * 4 * W * 4, W * 4 * 4);
+        memcpy(g_prev, g_px, (size_t)W * H * 4);
+        g_prev_look = S.look;
+    }
+    SDL_RenderCopy(g_ren, g_ftex, NULL, NULL);
 }
 
 static void present_now(void){
     if(!g_ren) return;
     g_last_present = SDL_GetTicks();
+    g_view = view_rect();
     uint32_t base = mr_screen_base();
     const Theme *t = &THEMES[S.theme];
     uint32_t cb; int cw, ch, crb;
@@ -504,7 +578,7 @@ static void present_now(void){
     if(ui){
         if(g_menu_open) draw_menu(); else ui_clear();
         if(toast){
-            int tw = (int)strlen(g_toast) * 6 + 24, tx = (W - tw) / 2, ty = 10;
+            int tw = (int)strlen(g_toast) * 6 + 24, tx = (W - tw) / 2, ty = g_view.y + 10;
             ui_rect(tx, ty, tw, 20, PANEL);
             ui_hline(tx, ty, tw, GOLD); ui_hline(tx, ty + 19, tw, GOLD);
             ui_vline(tx, ty, 20, GOLD); ui_vline(tx + tw - 1, ty, 20, GOLD);
@@ -520,7 +594,7 @@ static void present_now(void){
         SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255);
         SDL_RenderClear(g_ren);
         filter_into_stage();
-        if(S.scanlines && d.h >= H * 2){       /* the lower half of each line, darkened */
+        if(S.scanlines && d.h >= g_view.h * 2){       /* the lower half of each line, darkened */
             static SDL_Rect r[MAXH];
             for(int y = 0; y < H; y++){ r[y].x = 0; r[y].y = y * k + k - k / 2; r[y].w = W * k; r[y].h = k / 2; }
             SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
@@ -531,18 +605,31 @@ static void present_now(void){
         SDL_SetRenderTarget(g_ren, NULL);
         SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255);
         SDL_RenderClear(g_ren);
-        SDL_RenderCopy(g_ren, g_big, NULL, &d);
+        SDL_Rect sv = { g_view.x * k, g_view.y * k, g_view.w * k, g_view.h * k };
+        SDL_RenderCopy(g_ren, g_big, &sv, &d);
     } else {
         SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255);
         SDL_RenderClear(g_ren);
-        SDL_RenderCopy(g_ren, g_tex, NULL, &d);
-        if(S.scanlines && d.h >= H * 2){
+        SDL_RenderCopy(g_ren, g_tex, &g_view, &d);
+        if(S.scanlines && d.h >= g_view.h * 2){
             SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
             SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 70);
-            int s = d.h / H;
-            for(int y = 0; y < H; y++){ int ly = d.y + y * s + s - 1; SDL_RenderDrawLine(g_ren, d.x, ly, d.x + d.w - 1, ly); }
+            int s = d.h / g_view.h;
+            for(int y = 0; y < g_view.h; y++){ int ly = d.y + y * s + s - 1; SDL_RenderDrawLine(g_ren, d.x, ly, d.x + d.w - 1, ly); }
         }
-        if(ui) SDL_RenderCopy(g_ren, g_ui, NULL, &d);
+        if(ui) SDL_RenderCopy(g_ren, g_ui, &g_view, &d);
+    }
+    if(getenv("POPWINSHOT")){      /* the final window picture (looks, crop, scaling), for headless checks */
+        static int done; const char *at = getenv("POPWINSHOTAT");
+        if(!done && pop_wall_ticks() >= (uint32_t)(60 * (at ? atof(at) : 0))){ done = 1;
+            int ow, oh; SDL_GetRendererOutputSize(g_ren, &ow, &oh);
+            uint32_t *px = malloc((size_t)ow * oh * 4); FILE *f = fopen(getenv("POPWINSHOT"), "wb");
+            if(px && f && SDL_RenderReadPixels(g_ren, NULL, SDL_PIXELFORMAT_ARGB8888, px, ow * 4) == 0){
+                fprintf(f, "P6\n%d %d\n255\n", ow, oh);
+                for(int i = 0; i < ow * oh; i++){ fputc(px[i] >> 16 & 255, f); fputc(px[i] >> 8 & 255, f); fputc(px[i] & 255, f); }
+            }
+            if(f) fclose(f);
+            free(px); }
     }
     SDL_RenderPresent(g_ren);
     if(getenv("POPUISHOT")){       /* what the player sees (menu, dialogs, toasts), for headless checks */
@@ -603,8 +690,10 @@ static void menu_activate(int i, int dir){
     case M_THEME: S.theme = (S.theme + (dir ? dir : 1) + NTHEMES) % NTHEMES; cfg_save(); break;
     case M_LOOK: S.look = (S.look + (dir ? dir : 1) + NLOOKS) % NLOOKS;
                  if(!S.fullscreen) apply_window();      /* Original only has whole-number sizes */
+                 g_prev_look = -1;
                  cfg_save(); break;
     case M_SIZE: size_step(dir); cfg_save(); break;
+    case M_CROP: S.crop = !S.crop; if(!S.fullscreen) apply_window(); else g_view = view_rect(); cfg_save(); break;
     case M_SCAN: S.scanlines = !S.scanlines; cfg_save(); break;
     case M_CONTROLS: g_page_controls = 1; break;
     case M_QUIT: g_quit = 1; break;
@@ -684,8 +773,8 @@ static void to_logical(int wx, int wy, int *h, int *v){
     int ww, wh; SDL_GetWindowSize(g_win, &ww, &wh);
     int ow, oh; SDL_GetRendererOutputSize(g_ren, &ow, &oh);
     double sx = ww ? (double)ow / ww : 1, sy = wh ? (double)oh / wh : 1;   /* high-DPI */
-    *h = d.w ? (int)((wx * sx - d.x) * W / d.w) : 0;
-    *v = d.h ? (int)((wy * sy - d.y) * H / d.h) : 0;
+    *h = g_view.x + (d.w ? (int)((wx * sx - d.x) * g_view.w / d.w) : 0);
+    *v = g_view.y + (d.h ? (int)((wy * sy - d.y) * g_view.h / d.h) : 0);
 }
 
 void plat_pump(void){
@@ -738,7 +827,8 @@ int plat_next_event(int *what, int *msg, int *h, int *v){
 }
 void plat_shutdown(void){
     if(g_big) SDL_DestroyTexture(g_big);
-    g_big = NULL; g_bigk = 0;
+    if(g_ftex) SDL_DestroyTexture(g_ftex);
+    g_big = g_ftex = NULL; g_bigk = 0; g_prev_look = -1;
     if(g_ui) SDL_DestroyTexture(g_ui);
     if(g_tex) SDL_DestroyTexture(g_tex);
     if(g_ren) SDL_DestroyRenderer(g_ren);

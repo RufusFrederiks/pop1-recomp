@@ -29,7 +29,8 @@ src/             hand-written glue for this game
   heap.c         NewHandle/NewPtr/Dispose with reuse of freed memory
   mr/            macrecomp's toolbox/quickdraw/files/dialog .c files, included unchanged,
                  plus the functions that save their internal state
-  platform.c     window, display themes, the recomp menu (replaces macrecomp's platform_sdl.c)
+  platform.c     window, display looks and themes, the recomp menu (replaces macrecomp's platform_sdl.c)
+  filters.c      AdvMAME 4x and xBR 4x for the Remastered looks
 tools/
   prepare.py     images -> work/ + src/gen/ (also decodes the music driver)
   lift.py        macrecomp's lift68k.py plus a few forms it lacks (incl. 68020 scaled index)
@@ -100,15 +101,22 @@ The game opens with the **recomp menu**: press Enter on *Start Game*. **Esc**
 or **F1** brings the menu back at any time and pauses the game: resume,
 restart the level, save/load state, sound effects and music on/off,
 graphics, look, display theme (black-and-white only: Macintosh, Amber,
-Phosphor, Parchment, Midnight), size, scanlines, the controls, quit.
+Phosphor, Parchment, Midnight), size, crop borders (colour only),
+scanlines, the controls, quit.
 **F11** or **Alt+Enter** toggles fullscreen. Settings are kept in
 `pop1.cfg`.
 
 **Look**: *Remastered* (the default) scales the picture 4× and then
 smoothly to the largest size that fits, so it fills the screen and stays
-sharp. *Original* uses whole-number scaling only (1×, 2×, 3×...), the
-Mac's pixels exactly, with black borders where the screen has room left.
-More filters for the remastered look will follow.
+sharp. *AdvMAME 4x* does the same with smoothed diagonals (still pixel
+art, no new colours); *xBR 4x* gives smooth curves and edges. *Original*
+uses whole-number scaling only (1×, 2×, 3×...), the Mac's pixels exactly,
+with black borders where the screen has room left.
+
+**Crop Borders** (colour modes, on by default): the colour game only
+draws in a band of its screen (640×400 of 640×480; 512×320 in LC) and
+leaves the rest black. With this on, only that band is shown, so the
+rooms come out about 20% bigger.
 
 **Size**: *Fullscreen*, *Window Auto* (the default: the largest window
 that fits your screen) or a fixed window size. Only sizes that fit your
@@ -145,7 +153,8 @@ screenshots: `.pgm` in B&W, `.ppm` in colour), `POPUISHOT=file.ppm` +
 `POPKEYS="^n@8,right@12+2,save1@15,load1@20,menu1000.1@25"` (scripted keys,
 savestates and menu picks), `POPPOKE="a5-0x459e=1@2.5"` (write guest memory
 at a time; this one starts at the copy-protection level), `POPUPD=1`,
-`POPHEAPSTAT=1`, `POPWAV=out.wav` (record audio), `POPSOUND=1`,
+`POPHEAPSTAT=1`, `POPWINSHOT=out.ppm` + `POPWINSHOTAT=s` (the final
+window picture at a time), `POPWAV=out.wav` (record audio), `POPSOUND=1`,
 `POPNOAUDIO=1`, and macrecomp's own `MRTRACE`, `MRTRAPS`, `MRSHOT`,
 `MRWATCHADDR`.
 For headless runs: `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software`.
