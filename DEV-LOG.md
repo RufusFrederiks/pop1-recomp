@@ -637,3 +637,47 @@ Smaller things:
 
 First real playtest on Windows: Level 1 can be finished from start to exit.
 Levels 2 and up have not been tested yet; that is the next playtest.
+
+## 2026-11-07 — Step 22: Original and Remastered looks, a picture that fits
+
+Rufus: fullscreen came out small, and the window sizes were either too
+small or did not fit the screen. Two causes in `platform.c`:
+
+1. **Whole-number scaling only.** The 640×480 picture was scaled 1×, 2×,
+   3×... A screen less than 960 lines high (after the taskbar, or at
+   Windows display scaling) dropped straight to 1×.
+2. **Not DPI-aware.** At 125% or 150% display scaling Windows tells a
+   program that does not declare DPI awareness that the screen is smaller
+   (1536×864 for 1080p at 125%) and stretches its output. So fullscreen got
+   1× (640×480), blown up blurry to about 800×600; and a "2×" window was
+   1600×1200 on screen, taller than the monitor.
+
+Changes (all in `src/platform.c`):
+
+- `SDL_HINT_WINDOWS_DPI_AWARENESS = permonitorv2` before `SDL_Init`, and
+  `SDL_WINDOW_ALLOW_HIGHDPI` on the window: real pixels everywhere.
+- **Look** in the menu: *Original* (whole-number scaling, as before) or
+  *Remastered* (default). Remastered draws the frame with nearest neighbour
+  into a 4× render target (2560×1920 in colour), the menu and toasts on top
+  of it (after the filter, so a smoothing filter will never touch the text),
+  and that is scaled with bilinear filtering to the largest 4:3 rectangle
+  that fits ("sharp bilinear"). The factor drops below 4 only on a GPU that
+  cannot hold the texture; without render targets it falls back to a plain
+  nearest copy. `filter_into_stage()` is where AdvMAME/HQ4x will go: new
+  looks are added to `LOOKS[]` after "Remastered".
+- **Size** replaces the Window Size and Fullscreen rows (the menu has to
+  keep 13 rows to fit the 342-line B&W screen): Fullscreen, Window Auto
+  (default: the largest that fits the usable desktop minus the window
+  frame), then fixed sizes in half steps (whole steps for Original),
+  offered only when they fit. The window is created hidden, sized, then
+  shown.
+- `pop1.cfg`: new keys `look` and `window`; the old `scale` is ignored so
+  everyone starts on Auto.
+
+Checked with a test harness (platform.c with the game replaced by a test
+picture, SDL offscreen driver). The worst case, 1-pixel black/white
+stripes, at 1440×1080 (a 1080p screen): Remastered gives stripe widths
+2-3-2-2-2-3 with at most one blended pixel on an edge (two thirds of the
+pixels pure); Original gives 1280×960, exact 2×. Window choices on a
+1008×728 usable area: Original 640×480; Remastered 640×480 and 960×720.
+Not yet run with the game itself or on Windows.

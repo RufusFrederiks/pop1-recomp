@@ -99,10 +99,20 @@ The developer build (`tools/cross-windows.sh` without `--standalone`) is
 The game opens with the **recomp menu**: press Enter on *Start Game*. **Esc**
 or **F1** brings the menu back at any time and pauses the game: resume,
 restart the level, save/load state, sound effects and music on/off,
-graphics, display theme (black-and-white only: Macintosh, Amber, Phosphor,
-Parchment, Midnight), window size, fullscreen, scanlines, the controls,
-quit. **F11** or **Alt+Enter** toggles fullscreen. Settings are kept in
+graphics, look, display theme (black-and-white only: Macintosh, Amber,
+Phosphor, Parchment, Midnight), size, scanlines, the controls, quit.
+**F11** or **Alt+Enter** toggles fullscreen. Settings are kept in
 `pop1.cfg`.
+
+**Look**: *Remastered* (the default) scales the picture 4× and then
+smoothly to the largest size that fits, so it fills the screen and stays
+sharp. *Original* uses whole-number scaling only (1×, 2×, 3×...), the
+Mac's pixels exactly, with black borders where the screen has room left.
+More filters for the remastered look will follow.
+
+**Size**: *Fullscreen*, *Window Auto* (the default: the largest window
+that fits your screen) or a fixed window size. Only sizes that fit your
+screen are offered. The window can also be resized by dragging.
 
 **Graphics** (left/right, then Enter: the game restarts in that mode):
 

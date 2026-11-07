@@ -9,8 +9,19 @@
  *    a black frame reached the screen at every room change. Here the window
  *    is presented when the game asks for its next event (pop_frame(), the top
  *    of its loop), and otherwise at most every 100 ms (dialogs, modal loops).
- *  - Scaling (integer, letterboxed, resizable window), fullscreen (F11 or
- *    Alt+Enter), colour themes for the 1-bit picture, optional scanlines.
+ *  - Two looks. Original: whole-number scaling, letterboxed, the Mac's own
+ *    pixels. Remastered: the frame is scaled 4x (nearest neighbour, on the
+ *    GPU) into an intermediate texture, and that is smoothly scaled to the
+ *    largest 4:3 picture that fits ("sharp bilinear"): it fills the screen at
+ *    any size and stays crisp. Later filters (AdvMAME, HQ4x) go into the same
+ *    4x stage; the menu is drawn after the filter so its text is never
+ *    smoothed.
+ *  - DPI-aware on Windows, so fullscreen uses the real screen resolution
+ *    and not the smaller one Windows reports at 125%/150% display scaling.
+ *  - Window sizes worked out from the screen: "Auto" (the default) is the
+ *    largest that fits; the fixed sizes offered are only those that fit.
+ *    Fullscreen (F11 or Alt+Enter), colour themes for the 1-bit picture,
+ *    optional scanlines.
  *  - The recomp menu (Esc or F1; open at start-up): start or resume the game,
  *    restart the level, sound and music, display settings, controls, quit.
  *    It is drawn over the game in the game's own "Persian" font (FONT 25616)
@@ -37,6 +48,8 @@ static int W = QD_W, H = QD_H;
 static SDL_Window *g_win;
 static SDL_Renderer *g_ren;
 static SDL_Texture *g_tex, *g_ui;
+static SDL_Texture *g_big;                 /* Remastered: the 4x stage (a render target) */
+static int g_bigk;                         /* its factor (4, less on very old GPUs); 0 = not made yet, -1 = unavailable */
 static uint32_t g_start_ms, g_last_present;
 static uint32_t g_px[MAXW * MAXH], g_uipx[MAXW * MAXH];
 
@@ -50,8 +63,18 @@ static const Theme THEMES[] = {
     { "Midnight",  0xFFE8ECF4, 0xFF0A1028 },
 };
 #define NTHEMES ((int)(sizeof THEMES / sizeof *THEMES))
-static struct { int theme, scale, fullscreen, scanlines, sound, music, graphics; } S = { 0, 2, 0, 0, 1, 1, 1 };
+/* win: the window size, 0 = Auto (largest that fits), else in half steps of
+ * the picture (2 = 1x, 3 = 1.5x, ...). look: an index into LOOKS. */
+static struct { int theme, win, fullscreen, scanlines, sound, music, graphics, look; } S = { 0, 0, 0, 0, 1, 1, 1, 1 };
 static const char *GRAPHICS[] = { "B&W", "Colour", "LC Colour" };
+/* The looks. New filters for the 4x stage are added after "Remastered"
+ * (e.g. "Remastered AdvMAME", "Remastered HQ4x"); everything from index 1
+ * on is drawn through the 4x stage. */
+enum { LOOK_ORIGINAL, LOOK_REMASTERED };
+static const char *LOOKS[] = { "Original", "Remastered" };
+#define NLOOKS ((int)(sizeof LOOKS / sizeof *LOOKS))
+#define REMASTERED (S.look != LOOK_ORIGINAL)
+#define MAXWIN 16
 static int g_graphics_running = -1;        /* the mode this run started in */
 
 static void cfg_path(char *out, size_t n){ snprintf(out, n, "%s/../pop1.cfg", pop_work_dir()); }
@@ -64,7 +87,8 @@ static void cfg_load(void){
         int v; char k[32];
         if(sscanf(line, "%31[a-z] = %d", k, &v) != 2) continue;
         if(!strcmp(k, "theme") && v >= 0 && v < NTHEMES) S.theme = v;
-        else if(!strcmp(k, "scale") && v >= 1 && v <= 6) S.scale = v;
+        else if(!strcmp(k, "window") && v >= 0 && v <= MAXWIN) S.win = v;   /* the old "scale" is ignored: Auto fits better */
+        else if(!strcmp(k, "look") && v >= 0 && v < NLOOKS) S.look = v;
         else if(!strcmp(k, "fullscreen")) S.fullscreen = v != 0;
         else if(!strcmp(k, "scanlines")) S.scanlines = v != 0;
         else if(!strcmp(k, "graphics") && v >= 0 && v <= 2) S.graphics = v;
@@ -75,8 +99,10 @@ static void cfg_save(void){
     char p[1200]; cfg_path(p, sizeof p);
     FILE *f = fopen(p, "wb"); if(!f) return;
     fprintf(f, "# Prince of Persia recomp settings\n# graphics: 0 black-and-white, 1 colour (640x480), 2 LC colour (512x384)\n"
-               "graphics = %d\ntheme = %d\nscale = %d\nfullscreen = %d\nscanlines = %d\n",
-            S.graphics, S.theme, S.scale, S.fullscreen, S.scanlines);
+               "# look: 0 original (whole-number scaling), 1 remastered (4x, fills the screen)\n"
+               "# window: 0 auto (largest that fits), else the size in half steps (2 = 1x, 3 = 1.5x, ...)\n"
+               "graphics = %d\nlook = %d\ntheme = %d\nwindow = %d\nfullscreen = %d\nscanlines = %d\n",
+            S.graphics, S.look, S.theme, S.win, S.fullscreen, S.scanlines);
     fclose(f);
 }
 
@@ -189,7 +215,10 @@ static int ui_small(int x, int y, const char *s, uint32_t c){
 static void ui_small_center(int cx, int y, const char *s, uint32_t c){ ui_small(cx - (int)strlen(s) * 3, y, s, c); }
 
 /* ---- the menu ---- */
-enum { M_GAME, M_RESTART, M_SAVE, M_LOAD, M_SOUND, M_MUSIC, M_GRAPHICS, M_THEME, M_SCALE, M_FULL, M_SCAN, M_CONTROLS, M_QUIT, M_COUNT };
+/* M_SIZE is one row for Fullscreen / Window Auto / the window sizes that
+ * fit, which keeps 13 rows: the menu has to fit the 342-line B&W screen. */
+enum { M_GAME, M_RESTART, M_SAVE, M_LOAD, M_SOUND, M_MUSIC, M_GRAPHICS, M_LOOK, M_THEME, M_SIZE, M_SCAN, M_CONTROLS, M_QUIT, M_COUNT };
+static void window_size(int *w, int *h);
 static int g_menu_open, g_sel, g_page_controls, g_in_game, g_quit;
 static int g_slot = 1;                     /* the savestate slot (1-9) */
 static char g_toast[96]; static uint32_t g_toast_until;
@@ -209,8 +238,10 @@ static const char *item_label(int i, char *buf, size_t n){
                               S.graphics != g_graphics_running ? " *" : ""); return buf;
     case M_THEME:    if(g_graphics_running) return "Display   Colour";
                      snprintf(buf, n, "Display   %s", THEMES[S.theme].name); return buf;
-    case M_SCALE:    snprintf(buf, n, "Window Size   %dx", S.scale); return buf;
-    case M_FULL:     snprintf(buf, n, "Fullscreen   %s", S.fullscreen ? "On" : "Off"); return buf;
+    case M_LOOK:     snprintf(buf, n, "Look   %s", LOOKS[S.look]); return buf;
+    case M_SIZE:     if(S.fullscreen) return "Size   Fullscreen";
+                     if(!S.win) return "Size   Window Auto";
+                     { int w, h; window_size(&w, &h); snprintf(buf, n, "Size   %d x %d", w, h); } return buf;
     case M_SCAN:     snprintf(buf, n, "Scanlines   %s", S.scanlines ? "On" : "Off"); return buf;
     case M_CONTROLS: return "Controls";
     case M_QUIT:     return "Quit";
@@ -286,18 +317,73 @@ static void draw_menu(void){
         for(char *c = line; *c; c++) if(*c >= 'a' && *c <= 'z') *c -= 32;
         ui_small_center(W / 2, py + ph - 18, line, GOLD);
     }
+    else if(g_sel == M_LOOK)
+        ui_small_center(W / 2, py + ph - 18, REMASTERED ? "SCALED 4X, FILLS THE SCREEN" : "WHOLE PIXELS, LIKE THE MAC", GOLD);
+    else if(g_sel == M_SIZE)
+        ui_small_center(W / 2, py + ph - 18, "F11 OR ALT+ENTER: FULLSCREEN", GOLD);
     else
         ui_small_center(W / 2, py + ph - 18, "UP/DOWN CHOOSE  LEFT/RIGHT CHANGE  ENTER SELECT", GREY);
 }
 
 /* ---- the window ---- */
+/* The room a window can have on its screen: the desktop minus the taskbar
+ * and the window's own frame. */
+static void usable_area(int *uw, int *uh){
+    int di = g_win ? SDL_GetWindowDisplayIndex(g_win) : 0; if(di < 0) di = 0;
+    SDL_Rect r;
+    if(SDL_GetDisplayUsableBounds(di, &r) != 0 && SDL_GetDisplayBounds(di, &r) != 0){ r.w = W * 2; r.h = H * 2; }
+    int top = 0, left = 0, bottom = 0, right = 0;
+    if(!g_win || SDL_GetWindowBordersSize(g_win, &top, &left, &bottom, &right) != 0 || top == 0){
+        top = 32; left = right = bottom = 8; }                       /* a typical title bar and frame */
+    *uw = r.w - left - right; *uh = r.h - top - bottom;
+    if(*uw < W) *uw = W;
+    if(*uh < H) *uh = H;
+}
+/* The largest fixed size that fits, in half steps (2 = 1x). Original only
+ * offers whole steps. */
+static int max_halfsteps(void){
+    int uw, uh; usable_area(&uw, &uh);
+    int n = 2 * uw / W < 2 * uh / H ? 2 * uw / W : 2 * uh / H;
+    if(!REMASTERED) n &= ~1;
+    if(n > MAXWIN) n = MAXWIN;
+    return n < 2 ? 2 : n;
+}
+/* The window size (its inside) for the current setting. */
+static void window_size(int *w, int *h){
+    if(!S.win){                              /* Auto: the largest that fits */
+        int uw, uh; usable_area(&uw, &uh);
+        double f = (double)uw / W < (double)uh / H ? (double)uw / W : (double)uh / H;
+        if(!REMASTERED){ int s = (int)f; f = s < 1 ? 1 : s; }        /* whole steps */
+        *w = (int)(W * f); *h = (int)(H * f);
+        return;
+    }
+    int n = S.win, m = max_halfsteps();
+    if(!REMASTERED) n &= ~1;
+    if(n > m) n = m;
+    if(n < 2) n = 2;
+    *w = W * n / 2; *h = H * n / 2;
+}
 static void apply_window(void){
     if(!g_win) return;
     SDL_SetWindowFullscreen(g_win, S.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
     if(!S.fullscreen){
-        SDL_SetWindowSize(g_win, W * S.scale, H * S.scale);
+        int w, h; window_size(&w, &h);
+        SDL_SetWindowSize(g_win, w, h);
         SDL_SetWindowPosition(g_win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     }
+}
+/* The Size row: Fullscreen, Window Auto, then the fixed sizes that fit. */
+static void size_step(int dir){
+    int list[MAXWIN + 2], n = 0, cur = 0;
+    list[n++] = -1; list[n++] = 0;
+    for(int k = 2; k <= max_halfsteps(); k += REMASTERED ? 1 : 2) list[n++] = k;
+    int now = S.fullscreen ? -1 : S.win;
+    if(!S.fullscreen && now && !REMASTERED) now &= ~1;
+    for(int i = 0; i < n; i++) if(list[i] == now) cur = i;
+    cur = (cur + (dir ? dir : 1) + n) % n;
+    if(list[cur] < 0) S.fullscreen = 1;
+    else { S.fullscreen = 0; S.win = list[cur]; }
+    apply_window();
 }
 
 int plat_open(const char *title, int scale){
@@ -306,12 +392,27 @@ int plat_open(const char *title, int scale){
     font_load();
     {   uint32_t b; int w, h, rb;
         if(pop_colour_screen(&b, &w, &h, &rb)){ W = w; H = h; } }
+    /* Windows: say we handle display scaling ourselves. Otherwise at 125% or
+     * 150% Windows hands us a smaller pretend screen and stretches the
+     * result, which made fullscreen small and blurry. (SDL 2.24+) */
+#ifdef SDL_HINT_WINDOWS_DPI_AWARENESS
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+#endif
     if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0){ fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");       /* crisp pixels */
+    g_bigk = 0;
+    /* Made hidden, sized to the screen it is on, then shown: no jump. */
     g_win = SDL_CreateWindow("Prince of Persia \xE2\x80\x94 recompiled", SDL_WINDOWPOS_CENTERED,
-                             SDL_WINDOWPOS_CENTERED, W * S.scale, H * S.scale, SDL_WINDOW_RESIZABLE);
+                             SDL_WINDOWPOS_CENTERED, W, H,
+                             SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_HIDDEN);
     if(!g_win){ fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
     SDL_SetWindowMinimumSize(g_win, W, H);
+    if(!S.fullscreen){
+        int w, h; window_size(&w, &h);
+        SDL_SetWindowSize(g_win, w, h);
+        SDL_SetWindowPosition(g_win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
+    SDL_ShowWindow(g_win);
     g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_ACCELERATED);
     if(!g_ren) g_ren = SDL_CreateRenderer(g_win, -1, 0);
     if(!g_ren){ fprintf(stderr, "renderer: %s\n", SDL_GetError()); return 1; }
@@ -324,14 +425,48 @@ int plat_open(const char *title, int scale){
     return (g_tex && g_ui) ? 0 : 1;
 }
 
+/* Where the picture goes in the window. Original: the largest whole-number
+ * scale. Remastered (or a window smaller than 1x): the largest that fits,
+ * keeping the picture's shape. */
 static SDL_Rect dest_rect(void){
     int ww, wh; SDL_GetRendererOutputSize(g_ren, &ww, &wh);
     int s = ww / W < wh / H ? ww / W : wh / H;
     SDL_Rect d;
-    if(s >= 1){ d.w = W * s; d.h = H * s; }
-    else { double f = (double)ww / W < (double)wh / H ? (double)ww / W : (double)wh / H; d.w = (int)(W * f); d.h = (int)(H * f); }
+    if(s >= 1 && !REMASTERED){ d.w = W * s; d.h = H * s; }
+    else { double f = (double)ww / W < (double)wh / H ? (double)ww / W : (double)wh / H;
+           d.w = (int)(W * f + 0.5); d.h = (int)(H * f + 0.5); }
     d.x = (ww - d.w) / 2; d.y = (wh - d.h) / 2;
     return d;
+}
+
+/* Remastered: the 4x stage, a render target scaled smoothly to the screen.
+ * The game frame goes in with nearest neighbour (each Mac pixel a clean 4x4
+ * block); scaling that big, sharp image to the final size with bilinear
+ * filtering gives even pixels at any size with only a hairline of softening
+ * on their edges. Factor 4 unless the GPU cannot hold the texture. */
+static int big_stage(void){
+    if(g_bigk) return g_bigk > 0;
+    g_bigk = -1;
+    if(!SDL_RenderTargetSupported(g_ren)) return 0;
+    SDL_RendererInfo ri; int maxw = 4096, maxh = 4096;
+    if(SDL_GetRendererInfo(g_ren, &ri) == 0 && ri.max_texture_width){ maxw = ri.max_texture_width; maxh = ri.max_texture_height; }
+    int k = 4;
+    while(k > 1 && (W * k > maxw || H * k > maxh)) k--;
+    if(k < 2) return 0;
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");       /* this one is scaled smoothly */
+    g_big = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, W * k, H * k);
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+    if(!g_big){ fprintf(stderr, "[display] no %dx stage: %s\n", k, SDL_GetError()); return 0; }
+    g_bigk = k;
+    return 1;
+}
+
+/* The filter step: the game frame (g_tex) into the 4x stage. Nearest
+ * neighbour is a plain copy (g_tex samples nearest). A CPU filter (AdvMAME,
+ * HQ4x) would instead write g_px into a W*k x H*k buffer here and copy that
+ * in. */
+static void filter_into_stage(void){
+    SDL_RenderCopy(g_ren, g_tex, NULL, NULL);
 }
 
 static void present_now(void){
@@ -365,18 +500,8 @@ static void present_now(void){
         for(int x = 0; x < W; x++) g_px[y * W + x] = ((row[x >> 3] >> (7 - (x & 7))) & 1) ? t->ink : t->paper;
     }
     SDL_UpdateTexture(g_tex, NULL, g_px, W * 4);
-    SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255);
-    SDL_RenderClear(g_ren);
-    SDL_Rect d = dest_rect();
-    SDL_RenderCopy(g_ren, g_tex, NULL, &d);
-    if(S.scanlines && d.h >= H * 2){
-        SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 70);
-        int s = d.h / H;
-        for(int y = 0; y < H; y++){ int ly = d.y + y * s + s - 1; SDL_RenderDrawLine(g_ren, d.x, ly, d.x + d.w - 1, ly); }
-    }
-    int toast = g_toast[0] && SDL_GetTicks() < g_toast_until;
-    if(g_menu_open || toast){
+    int toast = g_toast[0] && SDL_GetTicks() < g_toast_until, ui = g_menu_open || toast;
+    if(ui){
         if(g_menu_open) draw_menu(); else ui_clear();
         if(toast){
             int tw = (int)strlen(g_toast) * 6 + 24, tx = (W - tw) / 2, ty = 10;
@@ -386,7 +511,38 @@ static void present_now(void){
             ui_small(tx + 12, ty + 6, g_toast, CREAM);
         }
         SDL_UpdateTexture(g_ui, NULL, g_uipx, W * 4);
-        SDL_RenderCopy(g_ren, g_ui, NULL, &d);
+    }
+    SDL_Rect d = dest_rect();
+    if(REMASTERED && big_stage()){
+        /* game -> filter -> 4x stage (+ scanlines, + menu unfiltered) -> screen */
+        int k = g_bigk;
+        SDL_SetRenderTarget(g_ren, g_big);
+        SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255);
+        SDL_RenderClear(g_ren);
+        filter_into_stage();
+        if(S.scanlines && d.h >= H * 2){       /* the lower half of each line, darkened */
+            static SDL_Rect r[MAXH];
+            for(int y = 0; y < H; y++){ r[y].x = 0; r[y].y = y * k + k - k / 2; r[y].w = W * k; r[y].h = k / 2; }
+            SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 70);
+            SDL_RenderFillRects(g_ren, r, H);
+        }
+        if(ui) SDL_RenderCopy(g_ren, g_ui, NULL, NULL);
+        SDL_SetRenderTarget(g_ren, NULL);
+        SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255);
+        SDL_RenderClear(g_ren);
+        SDL_RenderCopy(g_ren, g_big, NULL, &d);
+    } else {
+        SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255);
+        SDL_RenderClear(g_ren);
+        SDL_RenderCopy(g_ren, g_tex, NULL, &d);
+        if(S.scanlines && d.h >= H * 2){
+            SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 70);
+            int s = d.h / H;
+            for(int y = 0; y < H; y++){ int ly = d.y + y * s + s - 1; SDL_RenderDrawLine(g_ren, d.x, ly, d.x + d.w - 1, ly); }
+        }
+        if(ui) SDL_RenderCopy(g_ren, g_ui, NULL, &d);
     }
     SDL_RenderPresent(g_ren);
     if(getenv("POPUISHOT")){       /* what the player sees (menu, dialogs, toasts), for headless checks */
@@ -445,9 +601,10 @@ static void menu_activate(int i, int dir){
         else if(S.graphics != g_graphics_running){ cfg_save(); plat_shutdown(); pop_restart(); }
         break;
     case M_THEME: S.theme = (S.theme + (dir ? dir : 1) + NTHEMES) % NTHEMES; cfg_save(); break;
-    case M_SCALE: S.scale += dir ? dir : 1; if(S.scale < 1) S.scale = 4; if(S.scale > 4) S.scale = 1;
-                  apply_window(); cfg_save(); break;
-    case M_FULL: S.fullscreen = !S.fullscreen; apply_window(); cfg_save(); break;
+    case M_LOOK: S.look = (S.look + (dir ? dir : 1) + NLOOKS) % NLOOKS;
+                 if(!S.fullscreen) apply_window();      /* Original only has whole-number sizes */
+                 cfg_save(); break;
+    case M_SIZE: size_step(dir); cfg_save(); break;
     case M_SCAN: S.scanlines = !S.scanlines; cfg_save(); break;
     case M_CONTROLS: g_page_controls = 1; break;
     case M_QUIT: g_quit = 1; break;
@@ -580,6 +737,8 @@ int plat_next_event(int *what, int *msg, int *h, int *v){
     evhead = (evhead + 1) % EVQ; return 1;
 }
 void plat_shutdown(void){
+    if(g_big) SDL_DestroyTexture(g_big);
+    g_big = NULL; g_bigk = 0;
     if(g_ui) SDL_DestroyTexture(g_ui);
     if(g_tex) SDL_DestroyTexture(g_tex);
     if(g_ren) SDL_DestroyRenderer(g_ren);
