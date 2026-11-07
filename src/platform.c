@@ -34,6 +34,7 @@
 #include "macrecomp/toolbox.h"
 #include "pop1.h"
 #include "filters.h"
+#include "crt.h"
 #include "../ext/macrecomp/runtime/font5x7.h"
 #include <SDL.h>
 #include <stdio.h>
@@ -75,10 +76,12 @@ static struct { int theme, win, fullscreen, scanlines, sound, music, graphics, l
 static const char *GRAPHICS[] = { "B&W", "Colour", "LC Colour" };
 /* The looks. Everything from index 1 on is drawn through the 4x stage;
  * the filter decides how the game frame gets to 4x (see filter_into_stage). */
-enum { LOOK_ORIGINAL, LOOK_REMASTERED, LOOK_ADVMAME, LOOK_XBR };
-static const char *LOOKS[] = { "Original", "Remastered", "AdvMAME", "xBR" };
+enum { LOOK_ORIGINAL, LOOK_REMASTERED, LOOK_ADVMAME, LOOK_XBR, LOOK_CRT_MONITOR, LOOK_CRT_TV };
+static const char *LOOKS[] = { "Original", "Remastered", "AdvMAME", "xBR", "CRT Monitor", "CRT TV" };
 static const char *LOOK_HINT[] = { "WHOLE PIXELS, LIKE THE MAC", "SHARP PIXELS SCALED 4X TO FILL THE SCREEN",
-                                   "SMOOTHED DIAGONALS, STILL PIXEL ART", "SMOOTH CURVES AND EDGES" };
+                                   "SMOOTHED DIAGONALS, STILL PIXEL ART", "SMOOTH CURVES AND EDGES",
+                                   "AN APPLE RGB MONITOR: FINE STRIPES, SOFT GLOW", "A TV: SCANLINES, SHADOW MASK, GLOW" };
+#define IS_CRT(l) ((l) == LOOK_CRT_MONITOR || (l) == LOOK_CRT_TV)
 #define NLOOKS ((int)(sizeof LOOKS / sizeof *LOOKS))
 #define REMASTERED (S.look != LOOK_ORIGINAL)
 #define MAXWIN 16
@@ -107,7 +110,8 @@ static void cfg_save(void){
     char p[1200]; cfg_path(p, sizeof p);
     FILE *f = fopen(p, "wb"); if(!f) return;
     fprintf(f, "# Prince of Persia recomp settings\n# graphics: 0 black-and-white, 1 colour (640x480), 2 LC colour (512x384)\n"
-               "# look: 0 original (whole-number scaling), 1 remastered (4x, fills the screen), 2 advmame 4x, 3 xbr 4x\n"
+               "# look: 0 original (whole-number scaling), 1 remastered (4x, fills the screen), 2 advmame, 3 xbr,\n"
+               "#       4 crt monitor, 5 crt tv\n"
                "# crop: 1 = leave out the black rows the colour game never draws in\n"
                "# window: 0 auto (largest that fits), else the size in half steps (2 = 1x, 3 = 1.5x, ...)\n"
                "graphics = %d\nlook = %d\ncrop = %d\ntheme = %d\nwindow = %d\nfullscreen = %d\nscanlines = %d\n",
@@ -259,13 +263,15 @@ static const char *item_label(int i, char *buf, size_t n){
     case M_SIZE:     if(S.fullscreen) return "Size   Fullscreen";
                      if(!S.win) return "Size   Window Auto";
                      { int w, h; window_size(&w, &h); snprintf(buf, n, "Size   %d x %d", w, h); } return buf;
-    case M_SCAN:     snprintf(buf, n, "Scanlines   %s", S.scanlines ? "On" : "Off"); return buf;
+    case M_SCAN:     if(IS_CRT(S.look)) return "Scanlines   Built In";
+                     snprintf(buf, n, "Scanlines   %s", S.scanlines ? "On" : "Off"); return buf;
     case M_CONTROLS: return "Controls";
     case M_QUIT:     return "Quit";
     }
     return "";
 }
-static int item_enabled(int i){ return item_visible(i) && !((i == M_RESTART || i == M_SAVE) && !g_in_game); }
+static int item_enabled(int i){ return item_visible(i) && !((i == M_RESTART || i == M_SAVE) && !g_in_game)
+                                       && !(i == M_SCAN && IS_CRT(S.look)); }
 
 static const uint32_t GOLD = 0xFFE8B84A, GOLD_DIM = 0xFF8C6A22, CREAM = 0xFFF4E9D0,
                       GREY = 0xFF8A8478, PANEL = 0xE6100C08, SHADE = 0x99000000, SEL = 0xFF2A1F0E;
@@ -498,7 +504,7 @@ static SDL_Rect dest_rect(void){
  * and 4 above, so their work reaches the screen almost 1:1 instead of being
  * shrunk away. Made again when the wanted factor changes. */
 static int stage_factor(const SDL_Rect *d){
-    if(S.look == LOOK_REMASTERED) return 4;
+    if(S.look == LOOK_REMASTERED || IS_CRT(S.look)) return 4;
     return (double)d->h / g_view.h < 3.5 ? 3 : 4;
 }
 static int big_stage(int want){
@@ -525,7 +531,7 @@ static int big_stage(int want){
  * last frame (plus the filter's reach), and only those rows are uploaded. */
 static void filter_into_stage(void){
     int k = g_bigk;
-    if(S.look == LOOK_REMASTERED || (k != 3 && k != 4)){ SDL_RenderCopy(g_ren, g_tex, NULL, NULL); return; }
+    if(S.look == LOOK_REMASTERED || IS_CRT(S.look) || (k != 3 && k != 4)){ SDL_RenderCopy(g_ren, g_tex, NULL, NULL); return; }
     if(!g_fout){
         g_fout = malloc((size_t)MAXW * 4 * MAXH * 4 * 4);
         g_prev = malloc((size_t)MAXW * MAXH * 4);
@@ -554,6 +560,33 @@ static void filter_into_stage(void){
         g_prev_look = S.look;
     }
     SDL_RenderCopy(g_ren, g_ftex, NULL, NULL);
+}
+
+/* The CRT looks: the 4x stage holds the plain game, crt.c builds the CRT
+ * picture on the window from it, and the menu and toasts go on top through
+ * the same stage (scaled smoothly, as in the other looks) without the
+ * effect, so they stay readable. */
+static int crt_present(const SDL_Rect *d, int ui){
+    int k = g_bigk;
+    SDL_SetRenderTarget(g_ren, g_big);
+    SDL_SetTextureBlendMode(g_tex, SDL_BLENDMODE_NONE);
+    SDL_RenderCopy(g_ren, g_tex, NULL, NULL);
+    SDL_SetRenderTarget(g_ren, NULL);
+    if(!crt_draw(g_ren, S.look == LOOK_CRT_TV, g_tex, &g_view, g_big, k, d)) return 0;
+    if(ui){
+        SDL_SetRenderTarget(g_ren, g_big);
+        SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 0);
+        SDL_RenderClear(g_ren);
+        SDL_SetTextureBlendMode(g_ui, SDL_BLENDMODE_NONE);
+        SDL_RenderCopy(g_ren, g_ui, NULL, NULL);
+        SDL_SetTextureBlendMode(g_ui, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderTarget(g_ren, NULL);
+        SDL_Rect sv = { g_view.x * k, g_view.y * k, g_view.w * k, g_view.h * k };
+        SDL_SetTextureBlendMode(g_big, SDL_BLENDMODE_BLEND);
+        SDL_RenderCopy(g_ren, g_big, &sv, d);
+        SDL_SetTextureBlendMode(g_big, SDL_BLENDMODE_NONE);
+    }
+    return 1;
 }
 
 static void present_now(void){
@@ -601,7 +634,9 @@ static void present_now(void){
         SDL_UpdateTexture(g_ui, NULL, g_uipx, W * 4);
     }
     SDL_Rect d = dest_rect();
-    if(REMASTERED && big_stage(stage_factor(&d))){
+    if(IS_CRT(S.look) && big_stage(4) && crt_present(&d, ui)){
+        /* drawn */
+    } else if(REMASTERED && big_stage(stage_factor(&d))){
         /* game -> filter -> 4x stage (+ scanlines, + menu unfiltered) -> screen */
         int k = g_bigk;
         SDL_SetRenderTarget(g_ren, g_big);
@@ -851,6 +886,7 @@ int plat_next_event(int *what, int *msg, int *h, int *v){
 void plat_shutdown(void){
     if(g_big) SDL_DestroyTexture(g_big);
     if(g_ftex) SDL_DestroyTexture(g_ftex);
+    crt_free();
     g_big = g_ftex = NULL; g_bigk = 0; g_prev_look = -1;
     if(g_ui) SDL_DestroyTexture(g_ui);
     if(g_tex) SDL_DestroyTexture(g_tex);

@@ -750,3 +750,34 @@ hid the edges further, and in the menu the game is dimmed behind it.
 
 Checked at 1664×1040 with the real game: Remastered blocky, AdvMAME
 smoothed outlines with hard pixel edges, xBR round flames and turban.
+
+## 2026-11-07 — Step 25: CRT Monitor and CRT TV
+
+Rufus: AdvMAME and xBR are near-twins on this art (both smooth edges
+without blurring or new colours; xBR rounds curves more). Kept both and
+added two looks that are clearly different: CRTs.
+
+`src/crt.c` (new) builds the picture on the window in four layers, with
+SDL render blend modes only (works on every SDL renderer, costs the CPU
+nothing per frame):
+1. the game scaled to the picture: Monitor from the sharp 4× stage, TV
+   straight from the 1× frame with bilinear filtering (softer);
+2. some of it again with `BLENDMODE_ADD`, to make up for 3;
+3. a mask the exact size of the picture, multiplied in (`BLENDMODE_MOD`):
+   scanlines (a Gaussian beam per game row) times the phosphors, so the
+   stripes sit on whole screen pixels; made again when the size changes.
+   Below 2× there are no scanlines;
+4. glow: the frame halved twice (each halving averages 2×2) and stretched
+   back over the picture with `BLENDMODE_ADD`.
+
+| | beam σ (rows) | phosphors | add-back | glow |
+|---|---|---|---|---|
+| Monitor (AppleColor RGB / Trinitron) | 0.42 | aperture grille, others ×0.78 | 0.30 | 45/255 |
+| TV | 0.32 | slot mask, others ×0.74, gaps ×0.85 | 0.40 | 70/255 |
+
+Tuned against Remastered on the same frame (1080p fullscreen): overall
+brightness within a few percent. A first TV setting (add-back 1.6)
+clipped saturated colours: orange flames came out yellow, so the mask was
+made lighter instead of brightening more. The menu and toasts go on top
+through the stage without the effect. The Scanlines setting does not
+apply to these two (shown as "Built In").

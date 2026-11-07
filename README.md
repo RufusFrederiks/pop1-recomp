@@ -31,6 +31,7 @@ src/             hand-written glue for this game
                  plus the functions that save their internal state
   platform.c     window, display looks and themes, the recomp menu (replaces macrecomp's platform_sdl.c)
   filters.c      AdvMAME and xBR (3x and 4x) for the Remastered looks
+  crt.c          the CRT Monitor and CRT TV looks (GPU blend layers)
 tools/
   prepare.py     images -> work/ + src/gen/ (also decodes the music driver)
   lift.py        macrecomp's lift68k.py plus a few forms it lacks (incl. 68020 scaled index)
@@ -112,7 +113,10 @@ smoothly to the largest size that fits, so it fills the screen and stays
 sharp. *AdvMAME* smooths the diagonals (still pixel art, no new
 colours); *xBR* gives smooth curves and edges. These two run at 3× or 4×,
 whichever is closest to the size on your screen, so their work is not
-shrunk away. *Original*
+shrunk away. *CRT Monitor* looks like the Apple RGB monitors of the time
+(fine red, green and blue stripes, light scanlines, a little glow); *CRT
+TV* has stronger scanlines, a shadow mask, a softer picture and more glow.
+*Original*
 uses whole-number scaling only (1×, 2×, 3×...), the Mac's pixels exactly,
 with black borders where the screen has room left.
 

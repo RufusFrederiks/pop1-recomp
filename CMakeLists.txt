@@ -61,6 +61,7 @@ add_executable(pop1
     src/heap.c
     src/platform.c
     src/filters.c
+    src/crt.c
     ${POP1_GEN}
     ${MR_RUNTIME}
 )
