@@ -30,7 +30,7 @@ src/             hand-written glue for this game
   mr/            macrecomp's toolbox/quickdraw/files/dialog .c files, included unchanged,
                  plus the functions that save their internal state
   platform.c     window, display looks and themes, the recomp menu (replaces macrecomp's platform_sdl.c)
-  filters.c      AdvMAME 4x and xBR 4x for the Remastered looks
+  filters.c      AdvMAME and xBR (3x and 4x) for the Remastered looks
 tools/
   prepare.py     images -> work/ + src/gen/ (also decodes the music driver)
   lift.py        macrecomp's lift68k.py plus a few forms it lacks (incl. 68020 scaled index)
@@ -103,13 +103,16 @@ restart the level, save/load state, sound effects and music on/off,
 graphics, look, display theme (black-and-white only: Macintosh, Amber,
 Phosphor, Parchment, Midnight), size, crop borders (colour only),
 scanlines, the controls, quit.
-**F11** or **Alt+Enter** toggles fullscreen. Settings are kept in
+**F11** or **Alt+Enter** toggles fullscreen, **F2** (Shift+F2) switches
+to the next (previous) look while you play. Settings are kept in
 `pop1.cfg`.
 
 **Look**: *Remastered* (the default) scales the picture 4× and then
 smoothly to the largest size that fits, so it fills the screen and stays
-sharp. *AdvMAME 4x* does the same with smoothed diagonals (still pixel
-art, no new colours); *xBR 4x* gives smooth curves and edges. *Original*
+sharp. *AdvMAME* smooths the diagonals (still pixel art, no new
+colours); *xBR* gives smooth curves and edges. These two run at 3× or 4×,
+whichever is closest to the size on your screen, so their work is not
+shrunk away. *Original*
 uses whole-number scaling only (1×, 2×, 3×...), the Mac's pixels exactly,
 with black borders where the screen has room left.
 

@@ -53,7 +53,8 @@ static SDL_Texture *g_big;                 /* Remastered: the 4x stage (a render
 static SDL_Texture *g_ftex;                /* a CPU filter's 4x output, copied into the stage */
 static uint32_t *g_fout, *g_prev;          /* that output, and the game frame it was made from */
 static int g_prev_look = -1;               /* the filter g_fout holds; -1 = nothing yet */
-static int g_bigk;                         /* its factor (4, less on very old GPUs); 0 = not made yet, -1 = unavailable */
+static int g_ftexk;                        /* the factor g_ftex was made for */
+static int g_bigk;                         /* its factor (3 or 4); 0 = not made yet, -1 = unavailable */
 static uint32_t g_start_ms, g_last_present;
 static uint32_t g_px[MAXW * MAXH], g_uipx[MAXW * MAXH];
 
@@ -75,7 +76,7 @@ static const char *GRAPHICS[] = { "B&W", "Colour", "LC Colour" };
 /* The looks. Everything from index 1 on is drawn through the 4x stage;
  * the filter decides how the game frame gets to 4x (see filter_into_stage). */
 enum { LOOK_ORIGINAL, LOOK_REMASTERED, LOOK_ADVMAME, LOOK_XBR };
-static const char *LOOKS[] = { "Original", "Remastered", "AdvMAME 4x", "xBR 4x" };
+static const char *LOOKS[] = { "Original", "Remastered", "AdvMAME", "xBR" };
 static const char *LOOK_HINT[] = { "WHOLE PIXELS, LIKE THE MAC", "SHARP PIXELS SCALED 4X TO FILL THE SCREEN",
                                    "SMOOTHED DIAGONALS, STILL PIXEL ART", "SMOOTH CURVES AND EDGES" };
 #define NLOOKS ((int)(sizeof LOOKS / sizeof *LOOKS))
@@ -288,7 +289,7 @@ static void draw_menu(void){
     ui_clear();
     ui_rect(0, 0, W, H, SHADE);
     int row = ROW, pw = 300, ph = 52 + row * n_visible() + 26, px = (W - pw) / 2, py = g_view.y + (g_view.h - ph) / 2;
-    if(g_page_controls){ ph = 52 + 17 * 12 + 26; py = g_view.y + (g_view.h - ph) / 2; }
+    if(g_page_controls){ ph = 52 + 17 * 13 + 26; py = g_view.y + (g_view.h - ph) / 2; }
     draw_frame(px, py, pw, ph);
     ui_text_center(W / 2, py + 10, "Prince of Persia", GOLD);
     ui_small_center(W / 2, py + 33, "STATIC RECOMPILATION  -  68K MAC TO NATIVE", GREY);
@@ -306,6 +307,7 @@ static void draw_menu(void){
             { "New game",          "Ctrl+N" },
             { "This menu",         "Esc or F1" },
             { "Save / load state", "F5 / F9" },
+            { "Next look",         "F2" },
             { "Fullscreen",        "F11 or Alt+Enter" },
         };
         int y = py + 56;
@@ -486,18 +488,27 @@ static SDL_Rect dest_rect(void){
     return d;
 }
 
-/* Remastered: the 4x stage, a render target scaled smoothly to the screen.
- * The game frame goes in with nearest neighbour (each Mac pixel a clean 4x4
- * block); scaling that big, sharp image to the final size with bilinear
- * filtering gives even pixels at any size with only a hairline of softening
- * on their edges. Factor 4 unless the GPU cannot hold the texture. */
-static int big_stage(void){
-    if(g_bigk) return g_bigk > 0;
+/* Remastered: the stage, a render target scaled smoothly to the screen.
+ * The game frame goes in at k times its size: nearest neighbour (each Mac
+ * pixel a clean block) or a filter. Scaling that sharp image to the final
+ * size with bilinear filtering gives even pixels at any size with only a
+ * hairline of softening on their edges.
+ * k: plain Remastered uses 4. The filters use the factor nearest to the
+ * size on screen, 3 below 3.5x (a 1080p screen shows the game at ~2.5-2.7x)
+ * and 4 above, so their work reaches the screen almost 1:1 instead of being
+ * shrunk away. Made again when the wanted factor changes. */
+static int stage_factor(const SDL_Rect *d){
+    if(S.look == LOOK_REMASTERED) return 4;
+    return (double)d->h / g_view.h < 3.5 ? 3 : 4;
+}
+static int big_stage(int want){
+    if(g_bigk && (g_bigk < 0 || g_bigk == want)) return g_bigk > 0;
+    if(g_big){ SDL_DestroyTexture(g_big); g_big = NULL; }
     g_bigk = -1;
     if(!SDL_RenderTargetSupported(g_ren)) return 0;
     SDL_RendererInfo ri; int maxw = 4096, maxh = 4096;
     if(SDL_GetRendererInfo(g_ren, &ri) == 0 && ri.max_texture_width){ maxw = ri.max_texture_width; maxh = ri.max_texture_height; }
-    int k = 4;
+    int k = want;
     while(k > 1 && (W * k > maxw || H * k > maxh)) k--;
     if(k < 2) return 0;
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");       /* this one is scaled smoothly */
@@ -513,15 +524,18 @@ static int big_stage(void){
  * run on the CPU into g_fout, but only over the rows that changed since the
  * last frame (plus the filter's reach), and only those rows are uploaded. */
 static void filter_into_stage(void){
-    if(S.look == LOOK_REMASTERED || g_bigk != 4){ SDL_RenderCopy(g_ren, g_tex, NULL, NULL); return; }
+    int k = g_bigk;
+    if(S.look == LOOK_REMASTERED || (k != 3 && k != 4)){ SDL_RenderCopy(g_ren, g_tex, NULL, NULL); return; }
     if(!g_fout){
         g_fout = malloc((size_t)MAXW * 4 * MAXH * 4 * 4);
         g_prev = malloc((size_t)MAXW * MAXH * 4);
         if(!g_fout || !g_prev){ free(g_fout); free(g_prev); g_fout = g_prev = NULL; g_bigk = -1; return; }
     }
+    if(g_ftex && g_ftexk != k){ SDL_DestroyTexture(g_ftex); g_ftex = NULL; }
     if(!g_ftex){
-        g_ftex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, W * 4, H * 4);
+        g_ftex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, W * k, H * k);
         if(!g_ftex){ SDL_RenderCopy(g_ren, g_tex, NULL, NULL); return; }
+        g_ftexk = k;
         g_prev_look = -1;
     }
     int y0 = 0, y1 = H;
@@ -532,10 +546,10 @@ static void filter_into_stage(void){
     if(y0 < y1){
         y0 = y0 - FILTER_REACH < 0 ? 0 : y0 - FILTER_REACH;
         y1 = y1 + FILTER_REACH > H ? H : y1 + FILTER_REACH;
-        if(S.look == LOOK_ADVMAME) filter_advmame4x(g_px, W, H, g_fout, y0, y1);
-        else                       filter_xbr4x(g_px, W, H, g_fout, y0, y1);
-        SDL_Rect r = { 0, y0 * 4, W * 4, (y1 - y0) * 4 };
-        SDL_UpdateTexture(g_ftex, &r, g_fout + (size_t)y0 * 4 * W * 4, W * 4 * 4);
+        if(S.look == LOOK_ADVMAME) filter_advmame(g_px, W, H, g_fout, k, y0, y1);
+        else                       filter_xbr(g_px, W, H, g_fout, k, y0, y1);
+        SDL_Rect r = { 0, y0 * k, W * k, (y1 - y0) * k };
+        SDL_UpdateTexture(g_ftex, &r, g_fout + (size_t)y0 * k * W * k, W * k * 4);
         memcpy(g_prev, g_px, (size_t)W * H * 4);
         g_prev_look = S.look;
     }
@@ -587,7 +601,7 @@ static void present_now(void){
         SDL_UpdateTexture(g_ui, NULL, g_uipx, W * 4);
     }
     SDL_Rect d = dest_rect();
-    if(REMASTERED && big_stage()){
+    if(REMASTERED && big_stage(stage_factor(&d))){
         /* game -> filter -> 4x stage (+ scanlines, + menu unfiltered) -> screen */
         int k = g_bigk;
         SDL_SetRenderTarget(g_ren, g_big);
@@ -707,6 +721,15 @@ int pop_ui_key(const void *ev){
     SDL_Keycode k = e->key.keysym.sym;
     if(k == SDLK_F11 || (k == SDLK_RETURN && (e->key.keysym.mod & KMOD_ALT))){
         S.fullscreen = !S.fullscreen; apply_window(); cfg_save(); return 1; }
+    if(k == SDLK_F2){                                   /* the next look (Shift: the previous) */
+        S.look = (S.look + ((e->key.keysym.mod & KMOD_SHIFT) ? -1 : 1) + NLOOKS) % NLOOKS;
+        if(!S.fullscreen) apply_window();
+        cfg_save();
+        char msg[64]; snprintf(msg, sizeof msg, "LOOK: %s", LOOKS[S.look]);
+        for(char *c = msg; *c; c++) if(*c >= 'a' && *c <= 'z') *c -= 32;
+        pop_toast(msg);
+        return 1;
+    }
     if(k == SDLK_F5 && g_in_game){ pop_state_request(1, g_slot); g_menu_open = 0; return 1; }
     if(k == SDLK_F9){ pop_state_request(2, g_slot); g_menu_open = 0; return 1; }
     if(!g_menu_open){

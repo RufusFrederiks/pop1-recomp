@@ -724,3 +724,29 @@ window picture (Xvfb screen grabs only showed parts of it). Checked at
 1920×1080 fullscreen with the real game: Colour cropped 1728×1080 in
 Remastered and xBR, uncropped 1440×1080 in AdvMAME; the menu in cropped
 LC and in B&W.
+
+## 2026-11-07 — Step 24: filters at the size on screen, F2
+
+Rufus: the new filters looked "eerily similar". Reproduced his setup
+(Colour, Window Auto on a 1080p desktop = 1664×1040, 2.6×, scanlines on):
+the filters worked at 4×, and that picture was then shrunk to 2.6× with
+bilinear filtering, which averages most of their work away; scanlines
+hid the edges further, and in the menu the game is dimmed behind it.
+
+- `src/filters.c`: both filters now also have a 3× form. *AdvMAME* 3× is
+  Scale3x (its own rules, not Scale2x×1.5). *xBR* 3× uses the same edge
+  test with the 3×3 blend patterns (shallow: bottom row 1 / ¾ / ¼ and the
+  right middle ¼; steep the same turned; 45°: corner ⅞, its two
+  neighbours ⅛; otherwise the corner ½).
+- `stage_factor()`: plain Remastered keeps a 4× stage; the filters use 3
+  when the picture is shown at less than 3.5×, else 4. A 1080p screen
+  (2.5–2.7×) gets 3×, which reaches the screen nearly 1:1; 1440p and 4K
+  get 4×. The stage and the filter texture are made again when the factor
+  changes (window resized). Full frame, one core: AdvMAME 3× 2.0 ms,
+  xBR 3× 24 ms.
+- **F2** / **Shift+F2**: next / previous look during play, with a toast
+  naming it; also on the Controls page. The looks are now named just
+  *AdvMAME* and *xBR*.
+
+Checked at 1664×1040 with the real game: Remastered blocky, AdvMAME
+smoothed outlines with hard pixel edges, xBR round flames and turban.
