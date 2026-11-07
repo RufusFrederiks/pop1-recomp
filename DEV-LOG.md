@@ -680,4 +680,5 @@ stripes, at 1440×1080 (a 1080p screen): Remastered gives stripe widths
 2-3-2-2-2-3 with at most one blended pixel on an edge (two thirds of the
 pixels pure); Original gives 1280×960, exact 2×. Window choices on a
 1008×728 usable area: Original 640×480; Remastered 640×480 and 960×720.
-Not yet run with the game itself or on Windows.
+The real game (Linux build, virtual 1920×1080 screen, fullscreen, level 1):
+Remastered fills 1440×1080, Original 1280×960. Not yet run on Windows.
