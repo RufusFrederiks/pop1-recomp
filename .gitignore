@@ -33,6 +33,7 @@ Claude outputs/
 
 # Build output (game/ holds the playable exe, made from your own disks)
 build/
+build-*/
 game/
 *.o
 *.obj

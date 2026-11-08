@@ -73,6 +73,36 @@ target_compile_definitions(pop1 PRIVATE MACRECOMP_NO_TRAP_STUB MACRECOMP_SDL)
 # lifter's, not ours.
 set_source_files_properties(${POP1_GEN} PROPERTIES COMPILE_OPTIONS "-O1;-w")
 
+# The single-file build for Linux and macOS: your game files packed inside
+# (tools/embed.py), unpacked on first start into the per-user folder, where
+# saves and settings go too (see main.c). Lands in game/PrinceOfPersia.
+# Made from your own disks: for your own use, not for sharing.
+#   cmake -S . -B build-game -DPOP1_STANDALONE=ON -DCMAKE_BUILD_TYPE=Release
+#   cmake --build build-game
+# On Windows the one-file exe comes from tools/cross-windows.sh --standalone.
+option(POP1_STANDALONE "Build game/PrinceOfPersia with the game files inside" OFF)
+if(POP1_STANDALONE)
+    if(WIN32)
+        message(FATAL_ERROR "On Windows, build the standalone exe with tools/cross-windows.sh --standalone")
+    endif()
+    if(NOT EXISTS ${CMAKE_SOURCE_DIR}/work/files/files.txt)
+        message(FATAL_ERROR "work/files/ is empty: run `python3 tools/prepare.py` first (see README)")
+    endif()
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(POP1_EMBEDDED ${CMAKE_SOURCE_DIR}/src/gen/embedded.c)
+    add_custom_command(OUTPUT ${POP1_EMBEDDED}
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/embed.py
+        DEPENDS ${CMAKE_SOURCE_DIR}/tools/embed.py ${CMAKE_SOURCE_DIR}/work/files/files.txt
+        COMMENT "Packing work/files into src/gen/embedded.c")
+    target_sources(pop1 PRIVATE ${POP1_EMBEDDED})
+    # megabytes of byte literals: nothing to optimise
+    set_source_files_properties(${POP1_EMBEDDED} PROPERTIES COMPILE_OPTIONS "-O0")
+    target_compile_definitions(pop1 PRIVATE POP_STANDALONE)
+    set_target_properties(pop1 PROPERTIES
+        OUTPUT_NAME PrinceOfPersia
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/game)
+endif()
+
 option(POP1_LOOPGUARD "Count backward branches (MRMAXLOOPS) to find spins" OFF)
 if(POP1_LOOPGUARD)
     target_compile_definitions(pop1 PRIVATE MACRECOMP_LOOPGUARD)

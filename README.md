@@ -67,6 +67,9 @@ This project does not say where to get the game; use your own copy.
 Needs Python 3 (`pip install -r ext/macrecomp/tools/requirements.txt`), CMake,
 a C compiler and SDL2. On Windows the easy route is MSYS2's MinGW64 shell:
 `pacman -S mingw-w64-x86_64-{gcc,cmake,ninja,SDL2,python,python-pip}`.
+On Debian/Ubuntu (also inside WSL on Windows):
+`sudo apt install build-essential cmake ninja-build libsdl2-dev python3-pip`.
+On Fedora: `sudo dnf install gcc cmake ninja-build SDL2-devel python3-pip`.
 
 ```sh
 git clone --recursive https://github.com/RufusFrederiks/pop1-recomp
@@ -99,6 +102,21 @@ game\
 `%APPDATA%\pop1-recomp\PrinceOfPersia\` instead.)
 The developer build (`tools/cross-windows.sh` without `--standalone`) is
 `build\pop1.exe` with a console, reading `work\files\`.
+
+On **Linux**, build the one-file game after `tools/prepare.py`:
+
+```sh
+cmake -S . -B build-game -G Ninja -DPOP1_STANDALONE=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-game
+./game/PrinceOfPersia
+```
+
+It keeps the unpacked game files, saves, `pop1.cfg` and `pop1.log` in
+`~/.local/share/pop1-recomp/PrinceOfPersia/` (or under `$XDG_DATA_HOME`),
+the usual place on Linux, so the program itself can live anywhere, even
+somewhere read-only. Started from a terminal, it prints that folder once.
+The developer build (`./build/pop1`) keeps reading `work/` and saving next
+to it in the repo, as on Windows.
 
 The game opens with the **recomp menu**: press Enter on *Start Game*. **Esc**
 or **F1** brings the menu back at any time and pauses the game: resume,
@@ -143,7 +161,8 @@ screen are offered. The window can also be resized by dragging.
 (*Save State* / *Load State*, left/right picks slot 1-9; the menu shows when a
 slot was saved). A state is taken at the start of the game's next frame and
 belongs to the graphics mode it was saved in. Files go to `saves/` next to
-`pop1.cfg`.
+`pop1.cfg` (in the `game` folder on Windows, in the per-user folder on
+Linux, see above).
 
 In the game: arrow keys or the numeric keypad move, **Shift** acts (grab,
 climb, careful step, draw the sword). **Ctrl+N** is a new game (Ctrl stands

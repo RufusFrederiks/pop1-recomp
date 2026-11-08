@@ -826,3 +826,36 @@ clipped saturated colours: orange flames came out yellow, so the mask was
 made lighter instead of brightening more. The menu and toasts go on top
 through the stage without the effect. The Scanlines setting does not
 apply to these two (shown as "Built In").
+
+## 2026-11-08 — Linux: standalone build and where saves go
+
+First step towards Linux and macOS (macOS to be tested on an Apple Silicon
+Mac later).
+
+- New CMake option `POP1_STANDALONE`: the one-file build for Linux (and
+  later macOS), like `cross-windows.sh --standalone` does for Windows.
+  It runs `tools/embed.py` as a build step and writes
+  `game/PrinceOfPersia`. Refuses on Windows (the script stays the way there).
+- Where the standalone game keeps things now depends on the system
+  (`home_dir()` in `src/main.c`):
+  - Windows: unchanged, portable next to the exe, per-user folder only if
+    that is read-only.
+  - Linux and macOS: always SDL's per-user folder
+    (`~/.local/share/pop1-recomp/PrinceOfPersia/`,
+    `~/Library/Application Support/pop1-recomp/PrinceOfPersia/`). Programs
+    there usually live somewhere read-only (AppImage, /usr) or inside a
+    .app bundle, which must not be written into.
+  - On Linux/macOS the folder is printed once on the terminal before the
+    log goes to `pop1.log`.
+- The developer build (`build/pop1`) is unchanged: reads `work/`, saves
+  next to it in the repo.
+- Checked: no file names that differ only in capitals (Linux is
+  case-sensitive); the extracted files are named `disk<n>/<number>.data`,
+  plain ASCII.
+- Tested in the Linux workspace with stand-in files (no game disks there):
+  configure, embed and all hand-written sources compile with
+  `POP_STANDALONE`; SDL's folder resolves as expected, also with
+  `XDG_DATA_HOME`. Still to do: a real run on Linux (WSL) with the game.
+
+**Next:** a full Linux run in WSL; then GitHub Actions builds (Windows,
+Linux, macOS); then macOS specifics (.app bundle, universal build).

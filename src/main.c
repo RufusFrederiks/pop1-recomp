@@ -195,7 +195,9 @@ static void load_files(void){
  * the executable. The File Manager HAL reads files from disk, so on start-up
  * they are unpacked, once, and run from there.
  *
- * Portable: everything lives next to the exe --
+ * Where everything lives depends on the system:
+ *
+ * Windows -- portable: everything next to the exe,
  *     PrinceOfPersia.exe
  *     data\          the unpacked game files (data\files\...)
  *     saves\         savestates
@@ -205,7 +207,15 @@ static void load_files(void){
  * be written to (say, Program Files) does it fall back to the per-user folder
  * SDL picks (%APPDATA%\pop1-recomp\PrinceOfPersia\), which is where earlier
  * versions kept everything; settings and saves found there are copied over
- * the first time the portable folder is used. */
+ * the first time the portable folder is used.
+ *
+ * Linux and macOS -- always the per-user folder SDL picks, with work/, saves/,
+ * pop1.cfg and pop1.log inside:
+ *     Linux  ~/.local/share/pop1-recomp/PrinceOfPersia/  (or $XDG_DATA_HOME)
+ *     macOS  ~/Library/Application Support/pop1-recomp/PrinceOfPersia/
+ * Programs there usually sit somewhere the player should not write: a
+ * read-only AppImage, /usr/games, or inside a .app bundle (which writing
+ * into would break). Each user also gets their own saves that way. */
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
@@ -231,10 +241,12 @@ static void copy_file(const char *from, const char *to){
     while((n = fread(buf, 1, sizeof buf, a)) > 0) fwrite(buf, 1, n, b);
     fclose(a); fclose(b);
 }
-/* The folder to keep everything in (with a trailing separator): next to the
- * exe if a file can be written there, else the per-user folder. */
+/* The folder to keep everything in (with a trailing separator). Windows: next
+ * to the exe if a file can be written there, else the per-user folder. Linux
+ * and macOS: the per-user folder. */
 static const char *home_dir(int *portable){
     static char dir[1100];
+#ifdef _WIN32
     char *base = SDL_GetBasePath();
     if(base){
         snprintf(dir, sizeof dir, "%s", base);
@@ -242,6 +254,7 @@ static const char *home_dir(int *portable){
         FILE *f = fopen(probe, "ab");
         if(f){ fclose(f); *portable = 1; return dir; }
     }
+#endif
     *portable = 0;
     char *pref = SDL_GetPrefPath("pop1-recomp", "PrinceOfPersia");
     if(!pref) return NULL;
@@ -267,6 +280,11 @@ static const char *unpack_embedded(void){
         }
     }
     static char log[1200]; snprintf(log, sizeof log, "%spop1.log", home);
+#ifndef _WIN32
+    /* Started from a terminal, say once where things went: the rest of the
+     * log goes into the file. */
+    fprintf(stderr, "Prince of Persia: saves, settings and log in %s\n", home);
+#endif
     freopen(log, "w", stderr);
     fprintf(stderr, "%s folder: %s\n", portable ? "portable" : "per-user", home);
     static char work[1200]; snprintf(work, sizeof work, "%s%s", home, portable ? "data" : "work");
