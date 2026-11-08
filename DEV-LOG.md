@@ -852,10 +852,16 @@ Mac later).
 - Checked: no file names that differ only in capitals (Linux is
   case-sensitive); the extracted files are named `disk<n>/<number>.data`,
   plain ASCII.
-- Tested in the Linux workspace with stand-in files (no game disks there):
-  configure, embed and all hand-written sources compile with
-  `POP_STANDALONE`; SDL's folder resolves as expected, also with
-  `XDG_DATA_HOME`. Still to do: a real run on Linux (WSL) with the game.
+- Tested on Linux (Ubuntu, SDL 2.30) with the real disks (hashes match),
+  headless (`SDL_VIDEODRIVER=dummy`), with a fresh `$HOME`:
+  - `game/PrinceOfPersia` builds; the terminal shows the per-user folder.
+  - Run 1: start, walk, F5 to slot 1, quit. The folder then holds `work/`
+    (unpacked game files), `saves/slot1.state` and `pop1.log`; nothing is
+    written next to the program.
+  - Run 2 (a new process): F9 loads slot 1. Screenshot at the save and
+    after the load: same room, same spot, same health.
+  - `pop1.cfg` was not checked directly (the key script cannot press F2),
+    but it uses the same folder as `saves/`.
 
-**Next:** a full Linux run in WSL; then GitHub Actions builds (Windows,
-Linux, macOS); then macOS specifics (.app bundle, universal build).
+**Next:** play it in WSL; then GitHub Actions builds (Windows, Linux,
+macOS); then macOS specifics (.app bundle, universal build).
