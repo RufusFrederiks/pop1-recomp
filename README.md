@@ -186,7 +186,7 @@ window picture at a time), `POPWAV=out.wav` (record audio), `POPSOUND=1`,
 `POPNOAUDIO=1`, and macrecomp's own `MRTRACE`, `MRTRAPS`, `MRSHOT`,
 `MRWATCHADDR`.
 For headless runs: `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software`.
-
+Linux: tested by Claude (build, save/load); not yet tested by me.
 ## Status
 
 - [x] Recon: extract resources, trap census
