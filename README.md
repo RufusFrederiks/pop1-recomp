@@ -200,21 +200,27 @@ most others SDL knows, over USB or Bluetooth, plugged in at any time; the
 keyboard keeps working alongside. Buttons go by position, so "A" is the
 bottom button on every controller (Cross on PlayStation, B on Switch).
 
-| Controller (Xbox names) | Does |
-|---|---|
-| D-pad / left stick | run, turn, jump up (up), crouch (down) |
-| A, X or RT | Shift: grab, hold, careful step, sword |
-| B | jump / climb (Up) |
-| Y | crouch / step down (Down) |
-| Menu (Start) | the recomp menu: D-pad moves, A selects, B goes back |
-| View + RB / View + LB | save state / load state (hold View, then press) |
-| View (Back), tapped | next look |
+| Controller (Xbox names) | During play | In the menu (game paused) |
+|---|---|---|
+| D-pad / left stick | run, turn, jump up (up), crouch (down) | move |
+| A | Shift: grab, hold, careful step, sword | select |
+| B | jump / climb (Up) | back |
+| X | Shift, like A (or RT) | **save state** |
+| Y | crouch / step down (Down) | **load state** |
+| LB / RB | nothing | previous / next look |
+| Menu (Start) | open the menu | close it |
+| View (Back) | next look | next look |
+
+During play nothing but Start and View does anything outside the game, so
+nothing can go off by mistake; save and load are in the menu (the slot it
+shows; the menu closes after).
 
 A running jump: run, then press B (or push up). The Controls page in the
 menu shows the buttons with the names printed on the controller you have
 connected. To change them, edit `controller.cfg` (written next to `pop1.cfg`
 on first start; it explains itself): stick on/off, dead zone, rumble, and
-the View combinations (`hotkey+rb = save`).
+what each button does during play (a quick save on a button is possible
+there; the menu's buttons stay as above).
 The controller rumbles when the Prince gets hurt, lands hard, hits spikes or
 a slicer, and lightly for landings, crashing floors, slamming doors and sword
 blows. A `gamecontrollerdb.txt` next to it adds controllers SDL doesn't know.

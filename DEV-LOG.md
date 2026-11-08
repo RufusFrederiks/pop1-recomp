@@ -967,3 +967,20 @@ press RB to save, LB to load; tapped on its own it is still the next look
 ones and rewritten. Tested with POPPAD from a version-1 file: RB and a held
 LB alone do nothing, View+RB saves, View+LB loads, one look change from the
 lone tap, Controls page shows "View + RB" / "View + LB".
+
+### A calmer scheme: save and load in the menu
+
+The View combinations didn't feel right either (tap vs hold-with-another is
+hard to feel), and Rufus wanted View to stay on the looks. New scheme:
+during play only Start (menu) and View (next look, on the press) do anything
+outside the game. In the menu: X saves, Y loads (the menu's slot; the menu
+closes as with the menu items), LB/RB previous/next look, View next look;
+the menu's bottom line shows these when a controller is in. The hotkey and
+its combinations are gone. `controller.cfg` version 3: an older file that
+still has save or load on a shoulder button has them taken off. Tested with
+POPPAD from a version-1 file: LB held and RB during play do nothing, View
+changes the look, RB/LB in the menu step the look both ways, X saves, Y
+loads, Controls page lists the menu's buttons.
+
+(Also: the previous build never reached Rufus's PC; the game was running
+when it was copied over, so he was still on the first layout.)

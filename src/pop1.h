@@ -75,6 +75,7 @@ void pop_pad_sound(int n);
 int pop_pad_count(void);
 const char *pop_pad_name(void);
 int pop_pad_rows(char rows[][2][48], int max);
+const char *pop_pad_menu_hint(void);
 
 /* platform.c: the window, the display, the recomp menu. pop_ui_key takes an
  * SDL_Event* (void* here, so this header needs no SDL). */

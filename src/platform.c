@@ -365,6 +365,8 @@ static void draw_menu(void){
         ui_small_center(W / 2, py + ph - 18, S.crop ? "THE EMPTY BLACK ROWS LEFT OUT: A BIGGER PICTURE" : "THE WHOLE MAC SCREEN, BLACK ROWS INCLUDED", GOLD);
     else if(g_sel == M_SIZE)
         ui_small_center(W / 2, py + ph - 18, "F11 OR ALT+ENTER: FULLSCREEN", GOLD);
+    else if(pop_pad_menu_hint())             /* a controller in: its quick buttons */
+        ui_small_center(W / 2, py + ph - 18, pop_pad_menu_hint(), GREY);
     else
         ui_small_center(W / 2, py + ph - 18, "UP/DOWN CHOOSE  LEFT/RIGHT CHANGE  ENTER SELECT", GREY);
 }
