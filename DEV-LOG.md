@@ -865,3 +865,21 @@ Mac later).
 
 **Next:** play it in WSL; then GitHub Actions builds (Windows, Linux,
 macOS); then macOS specifics (.app bundle, universal build).
+
+## 2026-11-08 — Build check on GitHub (Windows, Linux, macOS)
+
+- `.github/workflows/build.yml`: on every push and pull request, three
+  GitHub machines compile the code: Windows (MSYS2 MinGW64, like the local
+  setup), Ubuntu, and macOS on Apple Silicon (Homebrew SDL2, which is now
+  sdl2-compat on top of SDL3). Also checks that the Python tools are valid.
+- GitHub never has the game (the repo is public; the lifted code comes from
+  the disks), so this cannot make a playable program. New CMake option
+  `POP1_SOURCES_ONLY` compiles everything hand-written (src/, macrecomp's
+  runtime, and main.c once more as the standalone build has it) without
+  `src/gen/`.
+- First run: all three green. macOS clang found nothing worse than a `/*`
+  inside a comment; fixed that and an unchecked `freopen`.
+- Badge on the README shows the latest result.
+
+**Next:** a script that builds the game on a Mac from your own disks
+(Homebrew, prepare, build), then a .app bundle.

@@ -16,7 +16,7 @@
  *    palettes, the VBL queue, the Sound Manager's channels);
  *  - the host-side state of the Toolbox: macrecomp's window list, heap
  *    pointer, resource handles and handle sizes, QuickDraw's pen and clip, the
- *    open files (src/mr/*_state.c compile those files unchanged so their
+ *    open files (the src/mr/ *_state.c files compile those files unchanged so their
  *    statics are in reach), and this recomp's own (regions, detached
  *    resources, where the music drivers live, what is playing, the device);
  *  - the clock: Ticks carries on from the saved value.
