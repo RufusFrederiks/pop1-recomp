@@ -19,7 +19,10 @@
  *   POPKEYS="^n@8,right@10+1.5,shift@12"
  * name@t taps a key at t seconds; name@t+d holds it for d seconds; a leading
  * ^ adds Command. Names: left right up down shift space return esc tab,
- * kp0..kp9, a single letter or digit, or a Mac key code like 0x7C. */
+ * kp0..kp9, a single letter or digit, or a Mac key code like 0x7C.
+ *
+ * Game controllers (pad.c) come in through the same two doors: their held
+ * buttons are OR'd into the KeyMap, and their presses become key events. */
 #include "macrecomp/m68k.h"
 #include "macrecomp/toolbox.h"
 #include "pop1.h"
@@ -156,6 +159,7 @@ static int modifiers(void){
     if(k & KMOD_ALT) m |= 0x0800;
     if(g_held_script[MK_SHIFT >> 3] & (1 << (MK_SHIFT & 7))) m |= 0x0200;
     if(g_held_script[MK_CMD >> 3] & (1 << (MK_CMD & 7))) m |= 0x0100;
+    if(pop_pad_shift()) m |= 0x0200;
     if(!plat_button()) m |= 0x0080;
     return m;
 }
@@ -213,6 +217,9 @@ static int is_modifier(int code){
 
 void pop_flush_keys(void){ g_kh = g_kt; }
 
+/* A key event from somewhere other than the keyboard (pad.c). */
+void pop_post_key(int what, int code){ kq_push(what, code, modifiers()); }
+
 /* For the HAL's modal loops (dialogs, alerts): scripted keys reach them too. */
 int pop_take_key(int *what, int *msg){
     script_tick();
@@ -231,6 +238,7 @@ void pop_script_poll(void){ script_tick(); }
 static void pull_sdl_keys(void){
     SDL_Event ev[16]; int n;
     SDL_PumpEvents();
+    pop_pad_poll();
     while((n = SDL_PeepEvents(ev, 16, SDL_GETEVENT, SDL_KEYDOWN, SDL_KEYUP)) > 0){
         for(int i = 0; i < n; i++){
             if(pop_ui_key(&ev[i])) continue;
@@ -306,6 +314,7 @@ void pop_get_keys(uint32_t km){
         int c = mac_code((SDL_Scancode)s);
         if(c >= 0) map[c >> 3] |= (uint8_t)(1 << (c & 7));
     }
+    pop_pad_keymap(map);                  /* controllers (pad.c) */
     for(int i = 0; i < 16; i++) m68k_w8(km + (uint32_t)i, map[i]);
 }
 

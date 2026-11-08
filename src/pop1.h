@@ -64,6 +64,17 @@ int pop_mac_key_message(int scancode);
 void pop_inject_menu(int menu, int item);
 void pop_script_poll(void);
 uint32_t pop_take_forced_menu(void);
+void pop_post_key(int what, int code);
+
+/* pad.c: game controllers (SDL GameController), read into the KeyMap. */
+void pop_pad_poll(void);
+void pop_pad_keymap(uint8_t map[16]);
+int pop_pad_shift(void);
+void pop_pad_rumble(int low, int high, int ms);
+void pop_pad_sound(int n);
+int pop_pad_count(void);
+const char *pop_pad_name(void);
+int pop_pad_rows(char rows[][2][48], int max);
 
 /* platform.c: the window, the display, the recomp menu. pop_ui_key takes an
  * SDL_Event* (void* here, so this header needs no SDL). */

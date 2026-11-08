@@ -48,6 +48,7 @@ __pycache__/
 
 # The front-end's settings and savestates (per player)
 pop1.cfg
+controller.cfg
 pop1.log
 saves/
 *.state
