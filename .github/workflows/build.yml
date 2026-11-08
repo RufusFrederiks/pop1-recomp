@@ -67,3 +67,19 @@ jobs:
 
       - name: Compile
         run: cmake --build build
+
+  # tools/build-mac.sh is what builds the Mac app from your disks. Here it runs
+  # everything but the game: tool checks, its private Python with cmake and
+  # ninja, SDL2 built from source, the code compiled against that, and a test
+  # app made and signed.
+  mac-script:
+    name: macOS build script
+    runs-on: macos-latest
+    steps:
+      - name: Get the code (with macrecomp)
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Run tools/build-mac.sh --check
+        run: tools/build-mac.sh --check

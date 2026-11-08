@@ -37,6 +37,14 @@ def icon(rsrc, kind8, mask_kind, size, rid=1000):
 def main():
     rsrc, out = Path(sys.argv[1]), sys.argv[2]
     big, small = icon(rsrc, "icl8", "ICN#", 32), icon(rsrc, "ics8", "ics#", 16)
+    if out.endswith(".icns"):
+        # A Mac app icon (tools/build-mac.sh): every size macOS asks for, all
+        # scaled by whole pixels from the 16 and 32 pixel originals.
+        sizes = [16, 32, 64, 128, 256, 512, 1024]
+        imgs = [small if s == 16 else big.resize((s, s), Image.NEAREST) for s in sizes]
+        imgs[-1].save(out, append_images=imgs[:-1])
+        print(f"wrote {out}")
+        return
     imgs = [small, big, big.resize((48, 48), Image.NEAREST), big.resize((256, 256), Image.NEAREST)]
     blobs = []
     for im in imgs:
