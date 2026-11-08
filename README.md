@@ -1,5 +1,9 @@
 # pop1-recomp
 
+[![Build check](https://github.com/RufusFrederiks/pop1-recomp/actions/workflows/build.yml/badge.svg)](https://github.com/RufusFrederiks/pop1-recomp/actions/workflows/build.yml)
+(Windows, Linux and macOS: the code compiles. GitHub never has the game, so
+this is not a playable build; that you make from your own disks, below.)
+
 A learning project: static recompilation of the Macintosh version of
 *Prince of Persia* (Brøderbund, 1992, Motorola 68k) into native code,
 in the style of XenonRecomp / N64Recomp.

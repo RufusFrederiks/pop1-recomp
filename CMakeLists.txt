@@ -4,8 +4,16 @@ set(CMAKE_C_STANDARD 11)
 
 # Run tools/prepare.py first: it fills src/gen/ (lifted C) and work/ from your
 # own disk images. Neither is in git.
+#
+# POP1_SOURCES_ONLY is for the automatic checks on GitHub, which never have
+# the game: it compiles everything written by hand (src/, macrecomp's runtime)
+# but not the lifted code, and so makes no program. It shows that the code
+# still builds on Windows, Linux and macOS.
+option(POP1_SOURCES_ONLY "Compile the hand-written code only (no game files needed, no program)" OFF)
 file(GLOB POP1_GEN ${CMAKE_SOURCE_DIR}/src/gen/code_*.c)
-if(NOT POP1_GEN)
+if(POP1_SOURCES_ONLY)
+    set(POP1_GEN "")
+elseif(NOT POP1_GEN)
     message(FATAL_ERROR "src/gen/ is empty: run `python tools/prepare.py` first (see README)")
 endif()
 
@@ -50,7 +58,7 @@ set_source_files_properties(src/mr/toolbox_state.c PROPERTIES
 set_source_files_properties(${CMAKE_BINARY_DIR}/mr/m68k.c PROPERTIES
     COMPILE_DEFINITIONS "m68k_time_slice=mr_core_time_slice")
 
-add_executable(pop1
+set(POP1_SOURCES
     src/main.c
     src/traps.c
     src/sound.c
@@ -62,16 +70,31 @@ add_executable(pop1
     src/platform.c
     src/filters.c
     src/crt.c
-    ${POP1_GEN}
     ${MR_RUNTIME}
 )
+if(POP1_SOURCES_ONLY)
+    if(POP1_STANDALONE)
+        message(FATAL_ERROR "POP1_SOURCES_ONLY and POP1_STANDALONE do not go together")
+    endif()
+    add_library(pop1 OBJECT ${POP1_SOURCES})
+    # main.c once more as the single-file build has it: that is where each
+    # system's folder for saves and settings is chosen.
+    add_library(pop1_standalone_main OBJECT src/main.c)
+    target_include_directories(pop1_standalone_main PRIVATE ${MR}/include src)
+    target_compile_definitions(pop1_standalone_main PRIVATE
+        MACRECOMP_NO_TRAP_STUB MACRECOMP_SDL POP_STANDALONE)
+else()
+    add_executable(pop1 ${POP1_SOURCES} ${POP1_GEN})
+endif()
 target_include_directories(pop1 PRIVATE ${MR}/include src)
 target_compile_definitions(pop1 PRIVATE MACRECOMP_NO_TRAP_STUB MACRECOMP_SDL)
 
 # The lifted code is ~3 MB of C with one label per instruction: optimising it
 # hard costs minutes and buys little. Quiet its warnings; they are the
 # lifter's, not ours.
-set_source_files_properties(${POP1_GEN} PROPERTIES COMPILE_OPTIONS "-O1;-w")
+if(POP1_GEN)
+    set_source_files_properties(${POP1_GEN} PROPERTIES COMPILE_OPTIONS "-O1;-w")
+endif()
 
 # The single-file build for Linux and macOS: your game files packed inside
 # (tools/embed.py), unpacked on first start into the per-user folder, where

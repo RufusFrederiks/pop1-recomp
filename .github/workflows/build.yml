@@ -1,0 +1,69 @@
+# Build check: on every push and pull request, compile the hand-written code
+# on Windows, Linux and macOS.
+#
+# GitHub never has the game: the lifted code (src/gen/) is made from your own
+# disks and stays on your machine. So this cannot make a playable program; it
+# shows that everything in this repo still compiles on all three systems
+# (POP1_SOURCES_ONLY in CMakeLists.txt) and that the Python tools are valid.
+name: Build check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:   # a "Run workflow" button on the Actions tab
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false   # one system failing should not stop the others
+      matrix:
+        include:
+          - name: Windows (MSYS2 MinGW64)
+            os: windows-latest
+            shell: msys2 {0}
+          - name: Linux (Ubuntu)
+            os: ubuntu-latest
+            shell: bash
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+            shell: bash
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - name: Get the code (with macrecomp)
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install tools (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-python
+
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev ninja-build
+
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install sdl2 ninja
+
+      - name: Check the Python tools
+        run: python3 -m py_compile tools/*.py
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DPOP1_SOURCES_ONLY=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compile
+        run: cmake --build build

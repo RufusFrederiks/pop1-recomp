@@ -285,7 +285,7 @@ static const char *unpack_embedded(void){
      * log goes into the file. */
     fprintf(stderr, "Prince of Persia: saves, settings and log in %s\n", home);
 #endif
-    freopen(log, "w", stderr);
+    if(!freopen(log, "w", stderr)) return NULL;   /* nowhere to write */
     fprintf(stderr, "%s folder: %s\n", portable ? "portable" : "per-user", home);
     static char work[1200]; snprintf(work, sizeof work, "%s%s", home, portable ? "data" : "work");
     for(int i = 0; i < pop_n_embedded; i++){
