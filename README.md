@@ -38,6 +38,8 @@ tools/
   cross-windows.sh  build pop1.exe / PrinceOfPersia.exe for Windows from Linux
   embed.py       pack work/files into the standalone exe (src/gen/embedded.c)
   make_icon.py   the game's Finder icon -> a Windows .ico
+  extract_sprites.py  every colour sprite and tile -> PNG (+ mask, indexed, sprites.json)
+                 in work/sprites/, for upscaling; standard library only
 ext/macrecomp/   the toolkit (submodule, unmodified)
 DEV-LOG.md       what was done, step by step
 ```
@@ -178,7 +180,9 @@ For headless runs: `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software`.
 - [x] Recomp menu (start, pause, sound, music, themes, fullscreen)
 - [x] Colour mode (Persia(COLOR), 640x480) and LC colour (Persia(LC), 512x384)
 - [x] Savestates (F5 / F9, nine slots)
+- [x] Display looks: Original, Remastered, AdvMAME, xBR, CRT Monitor, CRT TV (F2); Crop Borders; DPI-aware fullscreen
+- [x] Sprite extractor (colour sets to PNG, for the HD work)
 - [x] Level 1 finishable (played through on Windows)
-- [ ] Levels 2 and up tested
+- [ ] Levels 2 and up tested (1 to 4 played through on Windows, no bugs; rest in progress)
 - [ ] Sound effects checked, music seams fixed
 - [ ] Copy-protection screen checked

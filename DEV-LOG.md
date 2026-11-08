@@ -638,6 +638,51 @@ Smaller things:
 First real playtest on Windows: Level 1 can be finished from start to exit.
 Levels 2 and up have not been tested yet; that is the next playtest.
 
+## 2026-11-06 — Step 21b: the sprites, out as PNG
+
+First step towards an HD layer: get every sprite out of the game with the
+numbers the engine uses for it. `tools/extract_sprites.py` (new, standard
+library only) reads them from your own copy, from `work/files/`.
+
+**Where they are.** Not in the application: in the graphics files
+`Persia(COLOR)` (disk 2) and `Persia(LC)` (disk 3), type `PPgf`. Their
+resource forks hold 19 named sets (Title 1/2, Torch, Prince, Swords,
+Princess ×3, Chamber ×2, Dungeon, Dungeon blocks, Guard, Palace, Palace
+blocks, Skeleton, Fat Guard, Shadow, Vizier). For set *n*: `SHPD n` = offset,
+packed and unpacked length in the data fork; `SHPT n` = one offset per shape
+(−1 = none). CODE 3 lifter `0x862` loads both into the two 8-entry handle
+tables at `A5-0x5a86` / `A5-0x5a66` that the 68020 blitters index (Step 13).
+
+**Packing** (CODE 2 `0x2536`): LZSS, flag byte LSB first, 1 = back-reference
+(2 bytes: length = top nibble + 3, distance = low 12 bits + 1), 0 = literal.
+Not the music driver's variant.
+
+**Shapes** (8-bit blitter, CODE 2 `0x3dc4`): header width, height, x offset,
+y offset; the shape's (0,0) goes at (x − xoff, y − yoff), mirrored for the
+other direction. Then a byte-code: bit 7 = next row, low 5 bits a count
+(31 = plus the next byte), bits 6–5: `00` fill (count 0 = end), `01` literal
+run, `10` skip (transparent), `11` repeat block (count 0 = end of block, or
+of the shape). Colour bytes are palette entries, put through the
+PmForeColor translation table at `A5-0x5d06`.
+
+**Palette.** clut 2000 (201 entries). Entries `0x69..0x75` are the guard
+uniform of the level (clut 3000–3007, CODE 2 `0x24c4`); 196–200 cycle for the
+torches. No shape uses index 255, so the indexed PNGs use it for
+transparency.
+
+Result: COLOR 820 shapes, LC 799, all decoded without error and all inside
+their declared size. Per shape an RGBA PNG, a mask and an indexed PNG (the
+three agree pixel for pixel), a contact sheet per set, and `sprites.json`
+(set, shape number, size, offsets) — the key an HD layer needs to swap
+"shape 37 of set 400" for a file. Checked by eye: the prince's run cycle,
+guard sword frames, torch flames, potions, palace tiles, the story text.
+
+The B&W file `Persia(BW)` uses the same sets but another shape encoding
+(1-bit); not decoded, as HD work starts from the colour art.
+
+Next: hook the blitter calls (set, shape, x, y, direction) for a debug
+overlay; then the HD layer.
+
 ## 2026-11-07 — Step 22: Original and Remastered looks, a picture that fits
 
 Rufus: fullscreen came out small, and the window sizes were either too
