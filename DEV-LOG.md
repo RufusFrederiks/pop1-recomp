@@ -955,3 +955,15 @@ work, the Xbox one first.
 
 Not tested yet: real controllers on Windows (planned: Xbox One first, then
 PS5 and Switch Pro), and whether rumble feels right.
+
+### Save and load moved off the shoulder buttons
+
+Rufus played with the Xbox controller: works great, but save and load on
+RB/LB alone went off by mistake. Now View (Back) is a hotkey: hold it and
+press RB to save, LB to load; tapped on its own it is still the next look
+(not after a combination). LB and RB do nothing on their own by default.
+`controller.cfg` gets `hotkey+<button> = save|load|look|menu` lines and a
+`version`; a version-1 file still on the old defaults is moved to the new
+ones and rewritten. Tested with POPPAD from a version-1 file: RB and a held
+LB alone do nothing, View+RB saves, View+LB loads, one look change from the
+lone tap, Controls page shows "View + RB" / "View + LB".

@@ -207,13 +207,14 @@ bottom button on every controller (Cross on PlayStation, B on Switch).
 | B | jump / climb (Up) |
 | Y | crouch / step down (Down) |
 | Menu (Start) | the recomp menu: D-pad moves, A selects, B goes back |
-| RB / LB (hold) | save state / load state |
-| View (Back) | next look |
+| View + RB / View + LB | save state / load state (hold View, then press) |
+| View (Back), tapped | next look |
 
 A running jump: run, then press B (or push up). The Controls page in the
 menu shows the buttons with the names printed on the controller you have
 connected. To change them, edit `controller.cfg` (written next to `pop1.cfg`
-on first start; it explains itself): stick on/off, dead zone, and rumble.
+on first start; it explains itself): stick on/off, dead zone, rumble, and
+the View combinations (`hotkey+rb = save`).
 The controller rumbles when the Prince gets hurt, lands hard, hits spikes or
 a slicer, and lightly for landings, crashing floors, slamming doors and sword
 blows. A `gamecontrollerdb.txt` next to it adds controllers SDL doesn't know.

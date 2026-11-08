@@ -14,6 +14,9 @@
  *  - The recomp menu: Start opens and closes it; in it the D-pad or stick
  *    moves, A selects, B goes back. Buttons held when the menu closes are
  *    ignored until let go, so the A that picked "Resume" does not also grab.
+ *  - Save and load state are combinations: hold View (Back), press RB to
+ *    save or LB to load. On the shoulders alone they went off by mistake.
+ *    View tapped on its own is the next look.
  *  - controller.cfg (next to pop1.cfg) says which button does what; it is
  *    written with the defaults the first time. A gamecontrollerdb.txt next
  *    to it adds mappings for controllers SDL does not know.
@@ -37,9 +40,9 @@
 enum { MK_RETURN = 0x24, MK_SHIFT = 0x38, MK_LEFT = 0x7B, MK_RIGHT = 0x7C, MK_DOWN = 0x7D, MK_UP = 0x7E };
 
 /* ---- what a button can do ---- */
-enum { A_NONE, A_LEFT, A_RIGHT, A_UP, A_DOWN, A_SHIFT, A_MENU, A_SAVE, A_LOAD, A_LOOK, A_COUNT };
-static const char *ACTION_NAME[A_COUNT] = { "none", "left", "right", "up", "down", "shift", "menu", "save", "load", "look" };
-static const int ACTION_KEY[A_COUNT] = { -1, MK_LEFT, MK_RIGHT, MK_UP, MK_DOWN, MK_SHIFT, -1, -1, -1, -1 };
+enum { A_NONE, A_LEFT, A_RIGHT, A_UP, A_DOWN, A_SHIFT, A_MENU, A_SAVE, A_LOAD, A_LOOK, A_HOTKEY, A_COUNT };
+static const char *ACTION_NAME[A_COUNT] = { "none", "left", "right", "up", "down", "shift", "menu", "save", "load", "look", "hotkey" };
+static const int ACTION_KEY[A_COUNT] = { -1, MK_LEFT, MK_RIGHT, MK_UP, MK_DOWN, MK_SHIFT, -1, -1, -1, -1, -1 };
 
 /* ---- the inputs: SDL's buttons, then the two triggers as buttons ---- */
 #define IN_LT SDL_CONTROLLER_BUTTON_MAX
@@ -59,18 +62,22 @@ static const struct { const char *name; int in; } INPUTS[] = {
 #define NINPUTS ((int)(sizeof INPUTS / sizeof *INPUTS))
 
 /* Settings (controller.cfg). Defaults: A grabs, B jumps, X grabs, Y crouches,
- * RT grabs, RB saves, LB (held) loads, Start is the menu, Back the next look. */
-static int g_bind[NIN];
+ * RT grabs, Start is the menu, Back is the hotkey: held with RB it saves,
+ * with LB it loads, tapped alone it is the next look.
+ * g_combo: what a button does while the hotkey is held (menu, save, load,
+ * look; none = its own action). */
+#define CFG_VERSION 2
+static int g_bind[NIN], g_combo[NIN];
 static int g_stick = 1;            /* left stick moves too */
 static int g_dead = 50;            /* stick and trigger threshold, percent */
 static int g_rumble = 1;
 static void bind_defaults(void){
-    memset(g_bind, 0, sizeof g_bind);
+    memset(g_bind, 0, sizeof g_bind); memset(g_combo, 0, sizeof g_combo);
     g_bind[SDL_CONTROLLER_BUTTON_A] = A_SHIFT;  g_bind[SDL_CONTROLLER_BUTTON_B] = A_UP;
     g_bind[SDL_CONTROLLER_BUTTON_X] = A_SHIFT;  g_bind[SDL_CONTROLLER_BUTTON_Y] = A_DOWN;
     g_bind[IN_RT] = A_SHIFT;
-    g_bind[SDL_CONTROLLER_BUTTON_RIGHTSHOULDER] = A_SAVE; g_bind[SDL_CONTROLLER_BUTTON_LEFTSHOULDER] = A_LOAD;
-    g_bind[SDL_CONTROLLER_BUTTON_START] = A_MENU; g_bind[SDL_CONTROLLER_BUTTON_BACK] = A_LOOK;
+    g_bind[SDL_CONTROLLER_BUTTON_START] = A_MENU; g_bind[SDL_CONTROLLER_BUTTON_BACK] = A_HOTKEY;
+    g_combo[SDL_CONTROLLER_BUTTON_RIGHTSHOULDER] = A_SAVE; g_combo[SDL_CONTROLLER_BUTTON_LEFTSHOULDER] = A_LOAD;
     g_bind[SDL_CONTROLLER_BUTTON_DPAD_UP] = A_UP;     g_bind[SDL_CONTROLLER_BUTTON_DPAD_DOWN] = A_DOWN;
     g_bind[SDL_CONTROLLER_BUTTON_DPAD_LEFT] = A_LEFT; g_bind[SDL_CONTROLLER_BUTTON_DPAD_RIGHT] = A_RIGHT;
 }
@@ -85,14 +92,20 @@ static void cfg_write(const char *p){
                "#  Switch Pro: a = B, b = A, x = Y, y = X). lb/rb = shoulders, lt/rt = triggers,\n"
                "# start, back, dpup/dpdown/dpleft/dpright, ls/rs (stick clicks), misc, paddle1-4, touchpad.\n"
                "# What a button can do: left right up down shift (the game's keys),\n"
-               "#   menu (the recomp menu), save / load (savestate, current slot; load needs\n"
-               "#   the button held half a second), look (the next display look), none.\n"
+               "#   menu (the recomp menu), save / load (savestate, current slot; on a\n"
+               "#   button of its own, load needs it held half a second), look (the next\n"
+               "#   display look), hotkey (see below), none.\n"
+               "# hotkey: hold it and press another button for that button's hotkey+ action\n"
+               "#   (menu, save, load or look); tapped on its own it is the next look.\n"
+               "#   E.g. hotkey+rb = save: hold back, press rb.\n"
                "# In the menu: D-pad or stick to move, a to select, b to go back, whatever the settings here.\n"
                "# stick: 1 = the left stick moves the Prince too. deadzone: how far (percent)\n"
                "# a stick or trigger must go to count. rumble: 1 = on.\n");
     for(int i = 0; i < NINPUTS; i++)
         fprintf(f, "%s = %s\n", INPUTS[i].name, ACTION_NAME[g_bind[INPUTS[i].in]]);
-    fprintf(f, "stick = %d\ndeadzone = %d\nrumble = %d\n", g_stick, g_dead, g_rumble);
+    for(int i = 0; i < NINPUTS; i++)
+        if(g_combo[INPUTS[i].in]) fprintf(f, "hotkey+%s = %s\n", INPUTS[i].name, ACTION_NAME[g_combo[INPUTS[i].in]]);
+    fprintf(f, "stick = %d\ndeadzone = %d\nrumble = %d\nversion = %d\n", g_stick, g_dead, g_rumble, CFG_VERSION);
     fclose(f);
 }
 
@@ -101,20 +114,33 @@ static void cfg_load(void){
     char p[1200]; cfg_path(p, sizeof p, "controller.cfg");
     FILE *f = fopen(p, "rb");
     if(!f){ cfg_write(p); return; }
-    char line[160];
+    char line[160]; int version = 1;
     while(fgets(line, sizeof line, f)){
         char k[32], v[32];
-        if(line[0] == '#' || sscanf(line, " %31[a-z0-9] = %31[a-z0-9]", k, v) != 2) continue;
+        if(line[0] == '#' || sscanf(line, " %31[a-z0-9+] = %31[a-z0-9]", k, v) != 2) continue;
+        if(!strcmp(k, "version")){ version = atoi(v); continue; }
         if(!strcmp(k, "stick")){ g_stick = atoi(v) != 0; continue; }
         if(!strcmp(k, "rumble")){ g_rumble = atoi(v) != 0; continue; }
         if(!strcmp(k, "deadzone")){ int d = atoi(v); if(d >= 5 && d <= 95) g_dead = d; continue; }
-        int in = -1, a = -1;
-        for(int i = 0; i < NINPUTS; i++) if(!strcmp(k, INPUTS[i].name)) in = INPUTS[i].in;
+        int combo = !strncmp(k, "hotkey+", 7), in = -1, a = -1;
+        for(int i = 0; i < NINPUTS; i++) if(!strcmp(k + (combo ? 7 : 0), INPUTS[i].name)) in = INPUTS[i].in;
         for(int i = 0; i < A_COUNT; i++) if(!strcmp(v, ACTION_NAME[i])) a = i;
-        if(in >= 0 && a >= 0) g_bind[in] = a;
+        if(combo && a >= 0 && a != A_NONE && (a < A_MENU || a > A_LOOK)) a = -1;   /* combos: front-end actions only */
+        if(in >= 0 && a >= 0) (combo ? g_combo : g_bind)[in] = a;
         else fprintf(stderr, "[pad] controller.cfg: '%s = %s' not understood\n", k, v);
     }
     fclose(f);
+    /* The first version had save and load on RB and LB alone, too easy to
+     * hit by mistake. A file still on those defaults gets the new ones. */
+    if(version < CFG_VERSION){
+        if(g_bind[SDL_CONTROLLER_BUTTON_RIGHTSHOULDER] == A_SAVE && g_bind[SDL_CONTROLLER_BUTTON_LEFTSHOULDER] == A_LOAD
+           && g_bind[SDL_CONTROLLER_BUTTON_BACK] == A_LOOK){
+            g_bind[SDL_CONTROLLER_BUTTON_RIGHTSHOULDER] = g_bind[SDL_CONTROLLER_BUTTON_LEFTSHOULDER] = A_NONE;
+            g_bind[SDL_CONTROLLER_BUTTON_BACK] = A_HOTKEY;
+            fprintf(stderr, "[pad] controller.cfg: save/load moved to Back+RB / Back+LB\n");
+        }
+        cfg_write(p);
+    }
 }
 
 /* ---- the open controllers ---- */
@@ -228,6 +254,7 @@ static int g_held[NIN], g_prev[NIN];       /* inputs held now / at the last poll
 static int g_sx, g_sy, g_psx, g_psy;       /* the stick as -1/0/1, now and last poll */
 static int g_latch;                        /* game keys off until everything is let go */
 static uint32_t g_load_since;              /* when the load button went down (ms), 0 = not held */
+static int g_hot_used;                     /* the hotkey was used for a combination while held */
 static uint32_t g_rep_at; static int g_rep_dir;  /* menu auto-repeat */
 
 static void read_pads(void){
@@ -273,11 +300,19 @@ buttons:
     else if(pressed(SDL_CONTROLLER_BUTTON_B) || pressed(SDL_CONTROLLER_BUTTON_START)) ui_key(SDLK_ESCAPE);
 }
 
-/* The game's keys from the controllers, as Mac key codes; KeyMap form. */
+static int hotkey_held(void){
+    for(int in = 0; in < NIN; in++) if(g_held[in] && g_bind[in] == A_HOTKEY) return 1;
+    return 0;
+}
+
+/* The game's keys from the controllers, as Mac key codes; KeyMap form.
+ * With the hotkey held, buttons that have a combination give no key. */
 static void game_keys(uint8_t map[16]){
     memset(map, 0, 16);
     if(g_latch) return;
+    int hot = hotkey_held();
     for(int in = 0; in < NIN; in++){
+        if(hot && g_combo[in]) continue;
         int k = g_held[in] ? ACTION_KEY[g_bind[in]] : -1;
         if(k >= 0) map[k >> 3] |= (uint8_t)(1 << (k & 7));
     }
@@ -315,11 +350,25 @@ void pop_pad_poll(void){
     }
     if(g_latch && !any_game_input()) g_latch = 0;
 
-    /* front-end buttons */
+    /* front-end buttons: hotkey combinations first, then buttons of their own */
     uint32_t now = SDL_GetTicks();
-    int load_held = 0;
+    int load_held = 0, hot = hotkey_held();
     for(int in = 0; in < NIN; in++){
         int a = g_bind[in];
+        if(hot && g_combo[in]){
+            if(!pressed(in)) continue;
+            g_hot_used = 1; a = g_combo[in];
+            if(a == A_MENU){ ui_key(SDLK_ESCAPE); g_latch = 1; return; }
+            if(a == A_SAVE) ui_key(SDLK_F5);
+            if(a == A_LOAD) ui_key(SDLK_F9);      /* a deliberate combination: no hold needed */
+            if(a == A_LOOK) ui_key(SDLK_F2);
+            continue;
+        }
+        if(a == A_HOTKEY){                      /* tapped alone: the next look */
+            if(pressed(in)) g_hot_used = 0;
+            else if(!g_held[in] && g_prev[in] && !g_hot_used) ui_key(SDLK_F2);
+            continue;
+        }
         if(a == A_LOAD && g_held[in]) load_held = 1;
         if(!pressed(in)) continue;
         if(a == A_MENU){ ui_key(SDLK_ESCAPE); g_latch = 1; return; }
@@ -415,7 +464,9 @@ static const char *label(int in){
 int pop_pad_rows(char rows[][2][48], int max){
     static const struct { int a; const char *what; } SHOW[] = {
         { A_SHIFT, "Grab, hold, sword" }, { A_UP, "Jump / climb" }, { A_DOWN, "Crouch / step down" },
-        { A_MENU, "This menu" }, { A_SAVE, "Save state" }, { A_LOAD, "Load state (hold)" }, { A_LOOK, "Next look" } };
+        { A_MENU, "This menu" }, { A_SAVE, "Save state" }, { A_LOAD, "Load state" }, { A_LOOK, "Next look" } };
+    int hotkey = -1;
+    for(int i = 0; i < NINPUTS && hotkey < 0; i++) if(g_bind[INPUTS[i].in] == A_HOTKEY) hotkey = INPUTS[i].in;
     int n = 0;
     if(n < max){ snprintf(rows[n][0], 48, "Run / turn"); snprintf(rows[n][1], 48, g_stick ? "D-pad / left stick" : "D-pad"); n++; }
     for(unsigned s = 0; s < sizeof SHOW / sizeof *SHOW && n < max; s++){
@@ -424,9 +475,23 @@ int pop_pad_rows(char rows[][2][48], int max){
             int in = INPUTS[i].in;
             if(g_bind[in] != SHOW[s].a) continue;
             if(in >= SDL_CONTROLLER_BUTTON_DPAD_UP && in <= SDL_CONTROLLER_BUTTON_DPAD_RIGHT){ dpad = 1; continue; }
-            if(strlen(buf) + strlen(label(in)) + 3 >= sizeof buf) break;
+            if(strlen(buf) + strlen(label(in)) + 10 >= sizeof buf) break;
             if(buf[0]) strcat(buf, " / ");
             strcat(buf, label(in));
+            if(SHOW[s].a == A_LOAD) strcat(buf, " (hold)");
+        }
+        if(hotkey >= 0){                     /* combinations, and the hotkey tapped for the look */
+            if(SHOW[s].a == A_LOOK && strlen(buf) + strlen(label(hotkey)) + 3 < sizeof buf){
+                if(buf[0]) strcat(buf, " / ");
+                strcat(buf, label(hotkey));
+            }
+            for(int i = 0; i < NINPUTS; i++){
+                int in = INPUTS[i].in;
+                if(g_combo[in] != SHOW[s].a) continue;
+                if(strlen(buf) + strlen(label(hotkey)) + strlen(label(in)) + 6 >= sizeof buf) break;
+                if(buf[0]) strcat(buf, " / ");
+                strcat(buf, label(hotkey)); strcat(buf, " + "); strcat(buf, label(in));
+            }
         }
         if(!buf[0] && dpad) snprintf(buf, sizeof buf, "D-pad");
         if(!buf[0]) continue;
