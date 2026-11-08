@@ -117,6 +117,7 @@ the usual place on Linux, so the program itself can live anywhere, even
 somewhere read-only. Started from a terminal, it prints that folder once.
 The developer build (`./build/pop1`) keeps reading `work/` and saving next
 to it in the repo, as on Windows.
+Linux: tested by Claude (build, save/load); not yet tested by me.
 
 The game opens with the **recomp menu**: press Enter on *Start Game*. **Esc**
 or **F1** brings the menu back at any time and pauses the game: resume,
@@ -186,7 +187,7 @@ window picture at a time), `POPWAV=out.wav` (record audio), `POPSOUND=1`,
 `POPNOAUDIO=1`, and macrecomp's own `MRTRACE`, `MRTRAPS`, `MRSHOT`,
 `MRWATCHADDR`.
 For headless runs: `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software`.
-Linux: tested by Claude (build, save/load); not yet tested by me.
+
 ## Status
 
 - [x] Recon: extract resources, trap census
