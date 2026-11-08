@@ -883,3 +883,34 @@ macOS); then macOS specifics (.app bundle, universal build).
 
 **Next:** a script that builds the game on a Mac from your own disks
 (Homebrew, prepare, build), then a .app bundle.
+
+## 2026-11-08 — macOS: tools/build-mac.sh makes "Prince of Persia.app"
+
+GitHub can't build the game (no disks there), so the Mac app is built on
+the Mac itself, from your own disks, with one script.
+
+- `tools/build-mac.sh [disk folder]`: checks Apple's Command Line Tools
+  (asks macOS to install them if missing), makes a private Python in
+  `build-mac/venv` with cmake, ninja, Pillow and macrecomp's needs, builds
+  SDL2 2.32.10 from source as a static library (download checked against
+  a pinned SHA-256), runs `prepare.py`, builds the standalone game and wraps
+  it as `game/Prince of Persia.app`. No Homebrew; nothing is installed
+  outside `build-mac/`.
+- The app: Info.plist (HiDPI on), the game's own icon (`make_icon.py` now
+  also writes .icns: every size up to 1024, scaled by whole pixels so it
+  stays crisp), ad-hoc signed (Apple Silicon needs some signature; no Apple
+  account needed for an app built on the same Mac).
+- Static SDL2: SDL 2.32's CMake files give a static-only install the usual
+  `SDL2::SDL2` name, so `CMakeLists.txt` needed no change. Tested on Linux:
+  the game links with no SDL library needed at run time, and runs.
+- `pop_restart` (switching graphics mode restarts the program) used
+  `/proc/self/exe`, which macOS lacks; it now asks `_NSGetExecutablePath`.
+- macOS's built-in Python is 3.9. Ran `prepare.py`, `embed.py` and
+  `make_icon.py` under 3.9 with the real disks: same lifted code as on 3.13.
+- `.gitattributes` keeps `*.sh` at LF line endings, so a checkout on Windows
+  doesn't break the scripts for a Mac.
+- `--check` runs everything except the game; a new job on GitHub's Mac runs
+  it on every push. First run: passed (Apple clang 21, 1.5 minutes).
+
+Not tested yet: the full game on a real Mac (planned: on an Apple Silicon
+Mac with the disks from a USB stick).
