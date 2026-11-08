@@ -63,6 +63,7 @@ set(POP1_SOURCES
     src/traps.c
     src/sound.c
     src/input.c
+    src/pad.c
     src/qd.c
     src/cqd.c
     src/state.c

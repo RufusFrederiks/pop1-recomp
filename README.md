@@ -27,6 +27,7 @@ src/             hand-written glue for this game
   traps.c        PoP's Toolbox layer in front of macrecomp (VBL, resources, ...)
   sound.c        Sound Manager (bufferCmd) on SDL2 audio
   input.c        keyboard: GetKeys, key events, MenuKey
+  pad.c          game controllers (SDL GameController): buttons into the KeyMap, menu, rumble
   qd.c           regions, update clipping, CopyBits transfer modes
   cqd.c          colour: 8-bit screen, GDevice, colour ports, CopyBits with PixMaps, Palette Manager
   state.c        savestates
@@ -194,6 +195,36 @@ climb, careful step, draw the sword). **Ctrl+N** is a new game (Ctrl stands
 in for the Mac's Command key, Alt for Option). The picture is the game's
 colour mode unless you choose otherwise.
 
+**Controllers**: Xbox, PlayStation (DualShock 4, DualSense), Switch Pro and
+most others SDL knows, over USB or Bluetooth, plugged in at any time; the
+keyboard keeps working alongside. Buttons go by position, so "A" is the
+bottom button on every controller (Cross on PlayStation, B on Switch).
+
+| Controller (Xbox names) | During play | In the menu (game paused) |
+|---|---|---|
+| D-pad / left stick | run, turn, jump up (up), crouch (down) | move |
+| A | Shift: grab, hold, careful step, sword | select |
+| B | jump / climb (Up) | back |
+| X | Shift, like A (or RT) | **save state** |
+| Y | crouch / step down (Down) | **load state** |
+| LB / RB | nothing | previous / next look |
+| Menu (Start) | open the menu | close it |
+| View (Back) | next look | next look |
+
+During play nothing but Start and View does anything outside the game, so
+nothing can go off by mistake; save and load are in the menu (the slot it
+shows; the menu closes after).
+
+A running jump: run, then press B (or push up). The Controls page in the
+menu shows the buttons with the names printed on the controller you have
+connected. To change them, edit `controller.cfg` (written next to `pop1.cfg`
+on first start; it explains itself): stick on/off, dead zone, rumble, and
+what each button does during play (a quick save on a button is possible
+there; the menu's buttons stay as above).
+The controller rumbles when the Prince gets hurt, lands hard, hits spikes or
+a slicer, and lightly for landings, crashing floors, slamming doors and sword
+blows. A `gamecontrollerdb.txt` next to it adds controllers SDL doesn't know.
+
 To build the Windows executables on Linux: `tools/cross-windows.sh
 [--standalone] <SDL2 MinGW folder>` (see the script).
 
@@ -204,7 +235,9 @@ mode, overrides `pop1.cfg`), `POPNOMENU=1` (no start menu), `POPTRACE=n`
 screenshots: `.pgm` in B&W, `.ppm` in colour), `POPUISHOT=file.ppm` +
 `POPUISHOTAT=s` (what the player sees, menu and dialogs included),
 `POPKEYS="^n@8,right@12+2,save1@15,load1@20,menu1000.1@25"` (scripted keys,
-savestates and menu picks), `POPPOKE="a5-0x459e=1@2.5"` (write guest memory
+savestates and menu picks), `POPPAD="a@3,dpright@7+2,lx=-1@10+1"` (a scripted
+virtual controller, button names as in `controller.cfg`), `POPPADSND=1`
+(log each sound effect the game plays), `POPPOKE="a5-0x459e=1@2.5"` (write guest memory
 at a time; this one starts at the copy-protection level), `POPUPD=1`,
 `POPHEAPSTAT=1`, `POPWINSHOT=out.ppm` + `POPWINSHOTAT=s` (the final
 window picture at a time), `POPWAV=out.wav` (record audio), `POPSOUND=1`,
@@ -225,6 +258,7 @@ For headless runs: `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software`.
 - [x] Colour mode (Persia(COLOR), 640x480) and LC colour (Persia(LC), 512x384)
 - [x] Savestates (F5 / F9, nine slots)
 - [x] Display looks: Original, Remastered, AdvMAME, xBR, CRT Monitor, CRT TV (F2); Crop Borders; DPI-aware fullscreen
+- [x] Controllers: Xbox, PlayStation, Switch Pro; menu, rumble, remappable (tested by Claude with a virtual controller)
 - [x] Sprite extractor (colour sets to PNG, for the HD work)
 - [x] Level 1 finishable (played through on Windows)
 - [ ] Levels 2 and up tested (1 to 4 played through on Windows, no bugs; rest in progress)

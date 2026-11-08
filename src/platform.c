@@ -22,7 +22,7 @@
  *    largest that fits; the fixed sizes offered are only those that fit.
  *    Fullscreen (F11 or Alt+Enter), colour themes for the 1-bit picture,
  *    optional scanlines.
- *  - The recomp menu (Esc or F1; open at start-up): start or resume the game,
+ *  - The recomp menu (Esc or F1, or Start on a controller; open at start-up): start or resume the game,
  *    restart the level, sound and music, display settings, controls, quit.
  *    It is drawn over the game in the game's own "Persian" font (FONT 25616)
  *    and pauses the game while it is open. Settings live in pop1.cfg next to
@@ -300,6 +300,21 @@ static void draw_menu(void){
     ui_text_center(W / 2, py + 10, "Prince of Persia", GOLD);
     ui_small_center(W / 2, py + 33, "STATIC RECOMPILATION  -  68K MAC TO NATIVE", GREY);
     ui_hline(px + 30, py + 45, pw - 60, GOLD_DIM);
+    if(g_page_controls == 2){                  /* the controller page */
+        char rows[13][2][48]; int n = pop_pad_rows(rows, 13);
+        const char *name = pop_pad_name();
+        char head[64]; snprintf(head, sizeof head, "%s", name ? name : "No controller connected");
+        for(char *c = head; *c; c++) if(*c >= 'a' && *c <= 'z') *c -= 32;
+        if(strlen(head) > 46) head[46] = 0;
+        ui_small_center(W / 2, py + 54, head, name ? GOLD : GREY);
+        int y = py + 54 + 20;
+        for(int i = 0; i < n; i++, y += 16){
+            ui_small(px + 24, y, rows[i][0], rows[i][1][0] ? CREAM : GREY);
+            if(rows[i][1][0]) ui_small(px + pw - 24 - (int)strlen(rows[i][1]) * 6, y, rows[i][1], GOLD);
+        }
+        ui_small_center(W / 2, py + ph - 18, "LEFT/RIGHT: KEYBOARD   ENTER OR ESC: BACK", GREY);
+        return;
+    }
     if(g_page_controls){
         static const char *rows[][2] = {
             { "Run / turn",        "Left / Right arrows" },
@@ -321,7 +336,7 @@ static void draw_menu(void){
             ui_small(px + 24, y, rows[i][0], rows[i][1][0] ? CREAM : GREY);
             if(rows[i][1][0]) ui_small(px + pw - 24 - (int)strlen(rows[i][1]) * 6, y, rows[i][1], GOLD);
         }
-        ui_small_center(W / 2, py + ph - 18, "ENTER OR ESC: BACK", GREY);
+        ui_small_center(W / 2, py + ph - 18, "LEFT/RIGHT: CONTROLLER   ENTER OR ESC: BACK", GREY);
         return;
     }
     int y = py + 52;
@@ -350,6 +365,8 @@ static void draw_menu(void){
         ui_small_center(W / 2, py + ph - 18, S.crop ? "THE EMPTY BLACK ROWS LEFT OUT: A BIGGER PICTURE" : "THE WHOLE MAC SCREEN, BLACK ROWS INCLUDED", GOLD);
     else if(g_sel == M_SIZE)
         ui_small_center(W / 2, py + ph - 18, "F11 OR ALT+ENTER: FULLSCREEN", GOLD);
+    else if(pop_pad_menu_hint())             /* a controller in: its quick buttons */
+        ui_small_center(W / 2, py + ph - 18, pop_pad_menu_hint(), GREY);
     else
         ui_small_center(W / 2, py + ph - 18, "UP/DOWN CHOOSE  LEFT/RIGHT CHANGE  ENTER SELECT", GREY);
 }
@@ -744,7 +761,7 @@ static void menu_activate(int i, int dir){
     case M_SIZE: size_step(dir); cfg_save(); break;
     case M_CROP: S.crop = !S.crop; if(!S.fullscreen) apply_window(); else g_view = view_rect(); cfg_save(); break;
     case M_SCAN: S.scanlines = !S.scanlines; cfg_save(); break;
-    case M_CONTROLS: g_page_controls = 1; break;
+    case M_CONTROLS: g_page_controls = pop_pad_count() ? 2 : 1; break;   /* the controller page if one is in */
     case M_QUIT: g_quit = 1; break;
     }
 }
@@ -774,6 +791,7 @@ int pop_ui_key(const void *ev){
     if(e->key.repeat && k != SDLK_UP && k != SDLK_DOWN) return 1;
     if(g_page_controls){
         if(k == SDLK_ESCAPE || k == SDLK_RETURN || k == SDLK_SPACE || k == SDLK_F1) g_page_controls = 0;
+        else if(k == SDLK_LEFT || k == SDLK_RIGHT) g_page_controls = 3 - g_page_controls;
         present_now(); return 1;
     }
     switch(k){
@@ -807,6 +825,7 @@ void pop_frame(void){
             if(e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) pop_ui_key(&e);
             if(e.type == SDL_WINDOWEVENT) present_now();
         }
+        pop_pad_poll();
         pop_script_poll();
         {   const char *e = getenv("POPEXIT");           /* headless runs end on time */
             if(e && pop_wall_ticks() >= (uint32_t)(atof(e) * 60)) g_quit = 1; }
@@ -838,6 +857,7 @@ static void to_logical(int wx, int wy, int *h, int *v){
 void plat_pump(void){
     SDL_Event e;
     {   Rect o; int what, msg;                 /* a dialog is up: scripted keys go to it */
+        pop_pad_poll();                        /* controllers: A answers a dialog */
         if(pop_dialog_rect(&o)) while(pop_take_key(&what, &msg)) evpush(what, msg, 0, 0); }
     while(SDL_PollEvent(&e)){
         if(e.type == SDL_QUIT){ plat_shutdown(); exit(0); }

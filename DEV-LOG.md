@@ -914,3 +914,73 @@ the Mac itself, from your own disks, with one script.
 
 Not tested yet: the full game on a real Mac (planned: on an Apple Silicon
 Mac with the disks from a USB stick).
+
+## 2026-11-08 — Controllers (Xbox, PlayStation, Switch Pro) and rumble
+
+Rufus has an Xbox One, a PS5 and a Switch Pro controller: all of them should
+work, the Xbox one first.
+
+- The game never knows: PoP reads its controls with GetKeys, so `src/pad.c`
+  ORs the held buttons into the KeyMap as the keys they stand for (arrows,
+  Shift), and turns presses into key events like the keyboard does. Keyboard
+  and every connected controller work at once.
+- SDL2's GameController API: Xbox, DualShock 4, DualSense and Switch Pro come
+  with built-in mappings. `SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS=0`, so
+  SDL's A is the bottom button on all of them (B on a Switch). The DualSense
+  light bar goes the menu's gold.
+- Hot-plugging without depending on SDL's device events (other loops poll
+  the queue and would eat them): the joystick count is checked each poll and
+  the list rescanned when it changes. Controller events are flushed so they
+  don't pile up. A toast says which controller connected or left.
+- Menu: Start opens/closes it, D-pad/stick move (auto-repeat), A selects,
+  B goes back. Buttons held as the menu closes are ignored until let go, so
+  the A that picked Resume doesn't also grab. Controls page: a controller
+  page (left/right switches to the keyboard page) with the names printed on
+  the connected controller (Cross/Circle on PlayStation, B/A on Switch).
+- `controller.cfg` next to `pop1.cfg`, written with the defaults on first
+  start: every button's action, stick on/off, dead zone, rumble. Load state
+  needs the button held half a second (an accidental tap would throw away
+  progress). `gamecontrollerdb.txt` next to it is loaded if present.
+- Rumble: CODE 2 0x2a5a is the game's PlaySound(n), effect n = resource
+  5000 + n, and the resources have names ("hit kid" 13, "impale" 48,
+  "sliced" 46, "land hard" 0). `traps.c` wraps it (as it wraps the music
+  driver's unpacker) and `pad.c` rumbles for the ones you'd feel. Checked
+  with `POPPADSND=1`: footsteps come out as 23 ("foot"), a one-floor drop as
+  17 ("land soft"), the entrance gate as 6 ("gate slam").
+- `POPPAD` scripts a virtual SDL controller for headless runs. Tested on
+  Linux with it: A on the start menu starts the game, the D-pad runs right,
+  the stick runs back, Start opens the menu in a game, the Controls page,
+  RB saves, a tap on LB doesn't load and a held one does. Windows builds
+  (console and one-file) compile.
+
+Not tested yet: real controllers on Windows (planned: Xbox One first, then
+PS5 and Switch Pro), and whether rumble feels right.
+
+### Save and load moved off the shoulder buttons
+
+Rufus played with the Xbox controller: works great, but save and load on
+RB/LB alone went off by mistake. Now View (Back) is a hotkey: hold it and
+press RB to save, LB to load; tapped on its own it is still the next look
+(not after a combination). LB and RB do nothing on their own by default.
+`controller.cfg` gets `hotkey+<button> = save|load|look|menu` lines and a
+`version`; a version-1 file still on the old defaults is moved to the new
+ones and rewritten. Tested with POPPAD from a version-1 file: RB and a held
+LB alone do nothing, View+RB saves, View+LB loads, one look change from the
+lone tap, Controls page shows "View + RB" / "View + LB".
+
+### A calmer scheme: save and load in the menu
+
+The View combinations didn't feel right either (tap vs hold-with-another is
+hard to feel), and Rufus wanted View to stay on the looks. New scheme:
+during play only Start (menu) and View (next look, on the press) do anything
+outside the game. In the menu: X saves, Y loads (the menu's slot; the menu
+closes as with the menu items), LB/RB previous/next look, View next look;
+the menu's bottom line shows these when a controller is in. The hotkey and
+its combinations are gone. `controller.cfg` version 3: an older file that
+still has save or load on a shoulder button has them taken off. Tested with
+POPPAD from a version-1 file: LB held and RB during play do nothing, View
+changes the look, RB/LB in the menu step the look both ways, X saves, Y
+loads, Controls page lists the menu's buttons.
+
+(Also: the previous build never reached Rufus's PC; the game was running
+when it was copied over, so he was still on the first layout.)

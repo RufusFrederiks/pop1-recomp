@@ -577,10 +577,21 @@ void pop_traps_state(StateIO *io){
     }
 }
 
+/* ---- sounds, for controller rumble ----
+ * CODE 2 0x2a5a is the game's PlaySound(n): sound effect n is resource
+ * 5000 + n ("hit kid" is 13, "impale" 48). It is wrapped so pad.c hears of
+ * each one, whether sound is on or not, before the game plays it. */
+void fn_2_2a5a(uint32_t entry);
+static void play_sound_hook(uint32_t entry){
+    pop_pad_sound((int16_t)m68k_r16(SP + 4));  /* SP+0 is m68k_call's return marker */
+    fn_2_2a5a(entry);
+}
+
 void pop_init(void){
     if(getenv("POPHEAPSTAT")) atexit(pop_heap_report);
     pop_cqd_init(pop_graphics_mode());
     m68k_register(pop_seg_base(2) + 0x4dda, 0, mdrv_unpack);
+    m68k_register(pop_seg_base(2) + 0x2a5a, 0, play_sound_hook);
 
     /* A real Mac's VBL queue is never empty: the system's own tasks (the
      * cursor, the disk-insert poll) are already in it. The music driver
