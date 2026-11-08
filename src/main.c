@@ -322,11 +322,20 @@ void pop_restart(void){
 }
 #else
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>                  /* _NSGetExecutablePath */
+#endif
 static char **g_argv;
 void pop_restart(void){
     restart_env();
     fflush(NULL);
+#ifdef __APPLE__
+    /* macOS has no /proc: ask for the program's own path (inside the .app) */
+    char self[4096]; uint32_t n = sizeof self;
+    if(_NSGetExecutablePath(self, &n) == 0) execv(self, g_argv);
+#else
     execv("/proc/self/exe", g_argv);
+#endif
     execvp(g_argv[0], g_argv);
     perror("restart"); exit(1);
 }

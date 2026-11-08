@@ -40,8 +40,9 @@ tools/
   prepare.py     images -> work/ + src/gen/ (also decodes the music driver)
   lift.py        macrecomp's lift68k.py plus a few forms it lacks (incl. 68020 scaled index)
   cross-windows.sh  build pop1.exe / PrinceOfPersia.exe for Windows from Linux
+  build-mac.sh   build "Prince of Persia.app" on a Mac from your disks
   embed.py       pack work/files into the standalone exe (src/gen/embedded.c)
-  make_icon.py   the game's Finder icon -> a Windows .ico
+  make_icon.py   the game's Finder icon -> a Windows .ico or a Mac .icns
   extract_sprites.py  every colour sprite and tile -> PNG (+ mask, indexed, sprites.json)
                  in work/sprites/, for upscaling; standard library only
 ext/macrecomp/   the toolkit (submodule, unmodified)
@@ -122,6 +123,25 @@ somewhere read-only. Started from a terminal, it prints that folder once.
 The developer build (`./build/pop1`) keeps reading `work/` and saving next
 to it in the repo, as on Windows.
 Linux: tested by Claude (build, save/load); not yet tested by me.
+
+On a **Mac** (Apple Silicon or Intel), one script makes a normal Mac app.
+It needs only Apple's Command Line Tools (it asks macOS to install them if
+they are missing); everything else it fetches into `build-mac/`, nothing
+is installed elsewhere and no Homebrew is needed:
+
+```sh
+git clone --recursive https://github.com/RufusFrederiks/pop1-recomp
+cd pop1-recomp
+tools/build-mac.sh /path/to/folder/with/the/disks    # or put them in original/
+open "game/Prince of Persia.app"
+```
+
+The first run takes a few minutes (it builds SDL2 once). The app has the
+game's own icon and can be dragged to Applications. Saves and settings go to
+`~/Library/Application Support/pop1-recomp/PrinceOfPersia/`. On a MacBook,
+hold **fn** for the F keys (F5/F9 save/load, F11 fullscreen).
+macOS: the script is tested on GitHub's Mac (everything but the game); the
+game itself not yet on a real Mac.
 
 The game opens with the **recomp menu**: press Enter on *Start Game*. **Esc**
 or **F1** brings the menu back at any time and pauses the game: resume,
