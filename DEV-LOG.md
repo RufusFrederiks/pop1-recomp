@@ -1014,3 +1014,74 @@ MIT), written for this project in `src/filters.c` from the paper's rules.
 
 Checked with the real game (Linux, headless): Level 1 in MMPX, the menu
 with the hint "CLEAN LINES, ONLY THE ORIGINAL COLOURS".
+
+## 2026-11-09 — Torch lighting (a recomp-only effect)
+
+**Where the torches are.** Found in the disassembly and checked live:
+
+- The level is at `A5-0x16E2`, 2304 bytes: at level start CODE 3 `0x3a8`
+  does `GetResource('LEVL', level)` (level number in `A5-0x56F4`) and
+  BlockMoves `0x900` bytes there. The layout is the one every PoP shares:
+  foreground 24 rooms × 30 tiles, modifiers 24 × 30, door links, room links
+  (`A5-0xF42`, 4 bytes a room), start room/tile (`A5-0xEA2`/`-0xEA1`),
+  guards. A tile's low 5 bits are its type: 19 torch, 30 torch with
+  debris, 10 potion (kind = modifier >> 5 in memory; the LEVL file has
+  1-5, the game shifts it at load). The foreground in memory is the
+  resource byte for byte; the modifiers differ (wall patterns are
+  randomised at load).
+- The room on screen is the word at `A5-0x4596` (drawn_room). CODE 4
+  `0x3256` (load_room_links) loads its neighbours into `A5-0x4594` left,
+  `-0x4592` right, `-0x4590` up, `-0x458E` down. CODE 4 `0x51a2` is
+  get_room_address (curr_room_tiles at `A5-0x427E`, modifiers at
+  `-0x427A`, loaded_room at `-0x4280`), which the game also calls for
+  other rooms, so it is drawn_room that counts.
+- On the screen (measured, start room patched to room 5 in a scratch copy
+  of the resource fork): Colour 640×480 has 64-pixel tiles and 126-pixel
+  rows from y = 40; a torch's flame is centred at x = 64·col + 94 (in the
+  next tile's space), y = row top + 28, about 35 pixels tall. LC 512×384:
+  51.2-pixel tiles, 104-pixel rows from y = 25, flame at 51.2·col + 75,
+  row top + 23. A potion: Colour 64·col + 46, LC 51.2·col + 37.
+
+**When to light.** drawn_room keeps its value outside play, so the tiles
+alone could put light in the title or the princess scenes. A torch is lit
+once its flame colours (the screen indices of #FF8500 and #FFF300, found
+in the colour table) have been seen at its spot since the room came up; it
+then stays lit while the prince walks in front of it. A potion needs its
+flask colours on its spot every frame (it goes when drunk). And the whole
+effect is only on while 70% of the room's wall tiles are on the screen
+and the health line is drawn; it fades in and out over a quarter second.
+The room is only read at the top of the game's frame (mid-frame the game
+borrows drawn_room to draw the row above). Checked: intro, title and story
+come out pixel-identical with lighting on and off.
+
+**Drawing** (`src/light.c`, SDL render blend modes only):
+1. a light map at the game's own size: dim everywhere (214, 212, 222 of
+   255: a little darker and cooler), a soft pool added around each torch
+   (warm white, centred a third of a row below the flame, 1.6 tiles by 0.8
+   rows), a faint one round a potion, white over the status line;
+2. multiplied over the picture (`BLENDMODE_MOD`), stretched smoothly;
+3. added on top (`BLENDMODE_ADD`): a faint orange cast round the flame,
+   a small glow on it, and a tiny glow on a potion in its liquid's colour
+   (the most saturated pixel round the bubbles). Scaled down in palette
+   fades (by the flame orange's brightness in the colour table).
+Each torch flickers on its own (two slow waves and smoothed noise, ±8%).
+All strengths are in `TUNE` at the top of the file.
+
+It goes into the 4× stage right after the filter (so it lines up in
+Remastered, AdvMAME, xBR and MMPX at every size), before scanlines and the
+menu. The CRT looks get it in the stage and in a lit copy of the 1× frame
+(the TV picture and the glow come from that), so it is under the CRT
+effect. Never in *Original*, never in B&W, not while a dialog is up.
+
+Menu: *Lighting On/Off* after *Look* (colour only; "Not In Original" in
+the Original look), **F3** toggles it with a toast, and it is on the
+Controls page. Colour menus have 14 rows now; in the cropped LC picture
+they are 17 lines high and still fit. `pop1.cfg`: `lighting = 0/1`, off
+by default.
+
+Checked with the real game (Linux, headless) in Remastered, MMPX, CRT
+Monitor and CRT TV (Colour) and Remastered (LC): the light sits on the
+flames in each.
+
+Not handled: the upside-down potion (the room is drawn flipped; the walls
+check then fails and the light fades out until it is undone).

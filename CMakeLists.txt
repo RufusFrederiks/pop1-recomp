@@ -71,6 +71,7 @@ set(POP1_SOURCES
     src/platform.c
     src/filters.c
     src/crt.c
+    src/light.c
     ${MR_RUNTIME}
 )
 if(POP1_SOURCES_ONLY)

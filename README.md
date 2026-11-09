@@ -37,6 +37,7 @@ src/             hand-written glue for this game
   platform.c     window, display looks and themes, the recomp menu (replaces macrecomp's platform_sdl.c)
   filters.c      AdvMAME and xBR (3x and 4x) and MMPX (4x) for the Remastered looks
   crt.c          the CRT Monitor and CRT TV looks (GPU blend layers)
+  light.c        torch lighting (reads the room from the game's memory, GPU blend layers)
 tools/
   prepare.py     images -> work/ + src/gen/ (also decodes the music driver)
   lift.py        macrecomp's lift68k.py plus a few forms it lacks (incl. 68020 scaled index)
@@ -147,11 +148,12 @@ game itself not yet on a real Mac.
 The game opens with the **recomp menu**: press Enter on *Start Game*. **Esc**
 or **F1** brings the menu back at any time and pauses the game: resume,
 restart the level, save/load state, sound effects and music on/off,
-graphics, look, display theme (black-and-white only: Macintosh, Amber,
-Phosphor, Parchment, Midnight), size, crop borders (colour only),
+graphics, look, lighting (colour only), display theme (black-and-white only:
+Macintosh, Amber, Phosphor, Parchment, Midnight), size, crop borders (colour only),
 scanlines, the controls, quit.
 **F11** or **Alt+Enter** toggles fullscreen, **F2** (Shift+F2) switches
-to the next (previous) look while you play. Settings are kept in
+to the next (previous) look while you play, **F3** turns the torch light
+on and off. Settings are kept in
 `pop1.cfg`.
 
 **Look**: *Remastered* (the default) scales the picture 4× and then
@@ -162,12 +164,22 @@ whichever is closest to the size on your screen, so their work is not
 shrunk away. *MMPX* (Morgan McGuire and Mara Gagiu's style-preserving
 magnification, 2021) keeps the art as it was drawn: slopes become clean
 lines, while single pixels, thin lines and the tips of shapes stay, and
-every colour is one the game itself drew. It always works at 4×. *CRT Monitor* looks like the Apple RGB monitors of the time
+every colour is one the game itself drew. It always works at 4×.
+*CRT Monitor* looks like the Apple RGB monitors of the time
 (fine red, green and blue stripes, light scanlines, a little glow); *CRT
 TV* has stronger scanlines, a shadow mask, a softer picture and more glow.
 *Original*
 uses whole-number scaling only (1×, 2×, 3×...), the Mac's pixels exactly,
 with black borders where the screen has room left.
+
+**Lighting** (colour modes, off by default; F3): an effect of this recomp,
+not of the original game. The room is dimmed a little and each torch casts
+a warm, gently flickering pool of light, with a small glow on its flame;
+a potion glows faintly in its own colour. It works in every look except
+*Original*, which always stays the Mac's picture, and under the CRT looks.
+The recomp reads where the torches are from the level in the game's memory
+and only lights a torch once its flame is really on the screen, so the
+title, the story and the princess scenes are never lit.
 
 **Crop Borders** (colour modes, on by default): the colour game only
 draws in a band of its screen (640×400 of 640×480; 512×320 in LC) and
@@ -261,6 +273,7 @@ For headless runs: `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software`.
 - [x] Colour mode (Persia(COLOR), 640x480) and LC colour (Persia(LC), 512x384)
 - [x] Savestates (F5 / F9, nine slots)
 - [x] Display looks: Original, Remastered, AdvMAME, xBR, MMPX, CRT Monitor, CRT TV (F2); Crop Borders; DPI-aware fullscreen
+- [x] Torch lighting (F3), a recomp-only effect
 - [x] Controllers: Xbox, PlayStation, Switch Pro; menu, rumble, remappable (tested by Claude with a virtual controller)
 - [x] Sprite extractor (colour sets to PNG, for the HD work)
 - [x] Level 1 finishable (played through on Windows)

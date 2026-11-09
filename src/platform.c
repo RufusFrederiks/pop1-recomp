@@ -35,6 +35,7 @@
 #include "pop1.h"
 #include "filters.h"
 #include "crt.h"
+#include "light.h"
 #include "../ext/macrecomp/runtime/font5x7.h"
 #include <SDL.h>
 #include <stdio.h>
@@ -53,6 +54,8 @@ static SDL_Texture *g_tex, *g_ui;
 static SDL_Texture *g_big;                 /* Remastered: the 4x stage (a render target) */
 static SDL_Texture *g_ftex;                /* a CPU filter's 4x output, copied into the stage */
 static uint32_t *g_fout, *g_prev;          /* that output, and the game frame it was made from */
+static SDL_Texture *g_lit;                 /* CRT looks with torch light: the 1x frame, lit */
+static int g_frame_top;                    /* present_now() called at the top of the game's frame */
 static int g_prev_look = -1;               /* the filter g_fout holds; -1 = nothing yet */
 static int g_ftexk;                        /* the factor g_ftex was made for */
 static int g_bigk;                         /* its factor (3 or 4); 0 = not made yet, -1 = unavailable */
@@ -72,7 +75,7 @@ static const Theme THEMES[] = {
 /* win: the window size, 0 = Auto (largest that fits), else in half steps of
  * the picture (2 = 1x, 3 = 1.5x, ...). look: an index into LOOKS. crop: leave
  * out the rows the colour game never draws in (see view_rect). */
-static struct { int theme, win, fullscreen, scanlines, sound, music, graphics, look, crop; } S = { 0, 0, 0, 0, 1, 1, 1, 1, 1 };
+static struct { int theme, win, fullscreen, scanlines, sound, music, graphics, look, crop, lighting; } S = { 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 };
 static const char *GRAPHICS[] = { "B&W", "Colour", "LC Colour" };
 /* The looks. Everything from index 1 on is drawn through the 4x stage;
  * the filter decides how the game frame gets to 4x (see filter_into_stage). */
@@ -104,6 +107,7 @@ static void cfg_load(void){
         else if(!strcmp(k, "window") && v >= 0 && v <= MAXWIN) S.win = v;   /* the old "scale" is ignored: Auto fits better */
         else if(!strcmp(k, "look")){ for(int i = 0; i < NLOOKS; i++) if(LOOK_CFG[i] == v) S.look = i; }
         else if(!strcmp(k, "crop")) S.crop = v != 0;
+        else if(!strcmp(k, "lighting")) S.lighting = v != 0;
         else if(!strcmp(k, "fullscreen")) S.fullscreen = v != 0;
         else if(!strcmp(k, "scanlines")) S.scanlines = v != 0;
         else if(!strcmp(k, "graphics") && v >= 0 && v <= 2) S.graphics = v;
@@ -117,9 +121,10 @@ static void cfg_save(void){
                "# look: 0 original (whole-number scaling), 1 remastered (4x, fills the screen), 2 advmame, 3 xbr,\n"
                "#       4 crt monitor, 5 crt tv, 6 mmpx\n"
                "# crop: 1 = leave out the black rows the colour game never draws in\n"
+               "# lighting: 1 = torch light (a recomp effect: colour modes only, never in the original look)\n"
                "# window: 0 auto (largest that fits), else the size in half steps (2 = 1x, 3 = 1.5x, ...)\n"
-               "graphics = %d\nlook = %d\ncrop = %d\ntheme = %d\nwindow = %d\nfullscreen = %d\nscanlines = %d\n",
-            S.graphics, LOOK_CFG[S.look], S.crop, S.theme, S.win, S.fullscreen, S.scanlines);
+               "graphics = %d\nlook = %d\ncrop = %d\nlighting = %d\ntheme = %d\nwindow = %d\nfullscreen = %d\nscanlines = %d\n",
+            S.graphics, LOOK_CFG[S.look], S.crop, S.lighting, S.theme, S.win, S.fullscreen, S.scanlines);
     fclose(f);
 }
 
@@ -233,16 +238,17 @@ static void ui_small_center(int cx, int y, const char *s, uint32_t c){ ui_small(
 
 /* ---- the menu ---- */
 /* M_SIZE is one row for Fullscreen / Window Auto / the window sizes that
- * fit. Display (the B&W themes) is only shown in B&W and Crop Borders only
- * in colour, so 13 rows are shown: the menu has to fit the 342-line B&W
- * screen, and the 320 rows of the cropped LC screen (rows shrink there). */
-enum { M_GAME, M_RESTART, M_SAVE, M_LOAD, M_SOUND, M_MUSIC, M_GRAPHICS, M_LOOK, M_THEME, M_SIZE, M_CROP, M_SCAN, M_CONTROLS, M_QUIT, M_COUNT };
+ * fit. Display (the B&W themes) is only shown in B&W, Crop Borders and
+ * Lighting only in colour, so B&W shows 13 rows (the menu has to fit its
+ * 342-line screen) and colour 14 (in the 320 rows of the cropped LC screen
+ * the rows shrink to 17 lines). */
+enum { M_GAME, M_RESTART, M_SAVE, M_LOAD, M_SOUND, M_MUSIC, M_GRAPHICS, M_LOOK, M_LIGHT, M_THEME, M_SIZE, M_CROP, M_SCAN, M_CONTROLS, M_QUIT, M_COUNT };
 static void window_size(int *w, int *h);
 static SDL_Rect g_view;                    /* the part of the picture shown (view_rect) */
 static int g_menu_open, g_sel, g_page_controls, g_in_game, g_quit;
 static int g_slot = 1;                     /* the savestate slot (1-9) */
 static char g_toast[96]; static uint32_t g_toast_until;
-static int item_visible(int i){ return !(i == M_THEME && g_graphics_running) && !(i == M_CROP && !g_graphics_running); }
+static int item_visible(int i){ return !(i == M_THEME && g_graphics_running) && !((i == M_CROP || i == M_LIGHT) && !g_graphics_running); }
 static int n_visible(void){ int n = 0; for(int i = 0; i < M_COUNT; i++) n += item_visible(i); return n; }
 /* Row height: 20, less if the shown part of the screen is short. */
 static int row_h(void){ int r = (g_view.h - 78) / n_visible(); return r > 20 ? 20 : r < 16 ? 16 : r; }
@@ -263,6 +269,8 @@ static const char *item_label(int i, char *buf, size_t n){
     case M_THEME:    if(g_graphics_running) return "Display   Colour";
                      snprintf(buf, n, "Display   %s", THEMES[S.theme].name); return buf;
     case M_LOOK:     snprintf(buf, n, "Look   %s", LOOKS[S.look]); return buf;
+    case M_LIGHT:    if(!REMASTERED) return "Lighting   Not In Original";
+                     snprintf(buf, n, "Lighting   %s", S.lighting ? "On" : "Off"); return buf;
     case M_CROP:     snprintf(buf, n, "Crop Borders   %s", S.crop ? "On" : "Off"); return buf;
     case M_SIZE:     if(S.fullscreen) return "Size   Fullscreen";
                      if(!S.win) return "Size   Window Auto";
@@ -275,7 +283,7 @@ static const char *item_label(int i, char *buf, size_t n){
     return "";
 }
 static int item_enabled(int i){ return item_visible(i) && !((i == M_RESTART || i == M_SAVE) && !g_in_game)
-                                       && !(i == M_SCAN && IS_CRT(S.look)); }
+                                       && !(i == M_SCAN && IS_CRT(S.look)) && !(i == M_LIGHT && !REMASTERED); }
 
 static const uint32_t GOLD = 0xFFE8B84A, GOLD_DIM = 0xFF8C6A22, CREAM = 0xFFF4E9D0,
                       GREY = 0xFF8A8478, PANEL = 0xE6100C08, SHADE = 0x99000000, SEL = 0xFF2A1F0E;
@@ -299,7 +307,7 @@ static void draw_menu(void){
     ui_clear();
     ui_rect(0, 0, W, H, SHADE);
     int row = ROW, pw = 300, ph = 52 + row * n_visible() + 26, px = (W - pw) / 2, py = g_view.y + (g_view.h - ph) / 2;
-    if(g_page_controls){ ph = 52 + 17 * 13 + 26; py = g_view.y + (g_view.h - ph) / 2; }
+    if(g_page_controls){ ph = 52 + 17 * 14 + 26; py = g_view.y + (g_view.h - ph) / 2; }
     draw_frame(px, py, pw, ph);
     ui_text_center(W / 2, py + 10, "Prince of Persia", GOLD);
     ui_small_center(W / 2, py + 33, "STATIC RECOMPILATION  -  68K MAC TO NATIVE", GREY);
@@ -333,6 +341,7 @@ static void draw_menu(void){
             { "This menu",         "Esc or F1" },
             { "Save / load state", "F5 / F9" },
             { "Next look",         "F2" },
+            { "Torch light on/off","F3" },
             { "Fullscreen",        "F11 or Alt+Enter" },
         };
         int y = py + 56;
@@ -365,6 +374,8 @@ static void draw_menu(void){
     }
     else if(g_sel == M_LOOK)
         ui_small_center(W / 2, py + ph - 18, LOOK_HINT[S.look], GOLD);
+    else if(g_sel == M_LIGHT)
+        ui_small_center(W / 2, py + ph - 18, S.lighting ? "WARM, FLICKERING LIGHT FROM THE TORCHES   F3" : "THE ROOMS AS THE MAC LIT THEM   F3", GOLD);
     else if(g_sel == M_CROP)
         ui_small_center(W / 2, py + ph - 18, S.crop ? "THE EMPTY BLACK ROWS LEFT OUT: A BIGGER PICTURE" : "THE WHOLE MAC SCREEN, BLACK ROWS INCLUDED", GOLD);
     else if(g_sel == M_SIZE)
@@ -589,14 +600,28 @@ static void filter_into_stage(void){
 /* The CRT looks: the 4x stage holds the plain game, crt.c builds the CRT
  * picture on the window from it, and the menu and toasts go on top through
  * the same stage (scaled smoothly, as in the other looks) without the
- * effect, so they stay readable. */
+ * effect, so they stay readable. Torch light goes on before the CRT effect,
+ * into the stage and, for the TV and the glow, into a lit copy of the 1x
+ * frame. */
 static int crt_present(const SDL_Rect *d, int ui){
     int k = g_bigk;
+    SDL_Texture *game = g_tex;
     SDL_SetRenderTarget(g_ren, g_big);
     SDL_SetTextureBlendMode(g_tex, SDL_BLENDMODE_NONE);
     SDL_RenderCopy(g_ren, g_tex, NULL, NULL);
+    light_draw(g_ren, k);
+    if(light_visible()){
+        /* the TV and the glow work from the 1x frame: light that too */
+        if(!g_lit) g_lit = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, W, H);
+        if(g_lit){
+            SDL_SetRenderTarget(g_ren, g_lit);
+            SDL_RenderCopy(g_ren, g_tex, NULL, NULL);
+            light_draw(g_ren, 1);
+            game = g_lit;
+        }
+    }
     SDL_SetRenderTarget(g_ren, NULL);
-    if(!crt_draw(g_ren, S.look == LOOK_CRT_TV, g_tex, &g_view, g_big, k, d)) return 0;
+    if(!crt_draw(g_ren, S.look == LOOK_CRT_TV, game, &g_view, g_big, k, d)) return 0;
     if(ui){
         SDL_SetRenderTarget(g_ren, g_big);
         SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 0);
@@ -639,6 +664,8 @@ static void present_now(void){
                 }
             }
         }
+        /* torch light: never in Original, not while a dialog is up */
+        light_update(S.lighting && REMASTERED && !pop_dialog_rect(&o), M.mem + cb, W, H, crb, pal, g_frame_top);
     } else
     for(int y = 0; y < H; y++){
         const uint8_t *row = M.mem + base + (uint32_t)y * (W / 8);
@@ -667,6 +694,7 @@ static void present_now(void){
         SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255);
         SDL_RenderClear(g_ren);
         filter_into_stage();
+        light_draw(g_ren, k);                          /* torch light, on the filtered picture */
         if(S.scanlines && d.h >= g_view.h * 2){       /* the lower half of each line, darkened */
             static SDL_Rect r[MAXH];
             for(int y = 0; y < H; y++){ r[y].x = 0; r[y].y = y * k + k - k / 2; r[y].w = W * k; r[y].h = k / 2; }
@@ -768,6 +796,7 @@ static void menu_activate(int i, int dir){
     case M_SIZE: size_step(dir); cfg_save(); break;
     case M_CROP: S.crop = !S.crop; if(!S.fullscreen) apply_window(); else g_view = view_rect(); cfg_save(); break;
     case M_SCAN: S.scanlines = !S.scanlines; cfg_save(); break;
+    case M_LIGHT: S.lighting = !S.lighting; cfg_save(); break;
     case M_CONTROLS: g_page_controls = pop_pad_count() ? 2 : 1; break;   /* the controller page if one is in */
     case M_QUIT: g_quit = 1; break;
     }
@@ -787,6 +816,13 @@ int pop_ui_key(const void *ev){
         char msg[64]; snprintf(msg, sizeof msg, "LOOK: %s", LOOKS[S.look]);
         for(char *c = msg; *c; c++) if(*c >= 'a' && *c <= 'z') *c -= 32;
         pop_toast(msg);
+        return 1;
+    }
+    if(k == SDLK_F3){                                   /* torch light on/off */
+        if(!g_graphics_running){ pop_toast("LIGHTING: COLOUR MODES ONLY"); return 1; }
+        if(!REMASTERED){ pop_toast("LIGHTING: NOT IN THE ORIGINAL LOOK"); return 1; }
+        S.lighting = !S.lighting; cfg_save();
+        pop_toast(S.lighting ? "LIGHTING: ON" : "LIGHTING: OFF");
         return 1;
     }
     if(k == SDLK_F5 && g_in_game){ pop_state_request(1, g_slot); g_menu_open = 0; return 1; }
@@ -824,7 +860,7 @@ void pop_frame(void){
      * blanked the play area for a new room), for at most three frames. */
     static int held;
     if(pop_update_owed() && !g_menu_open && held < 3) held++;
-    else { held = 0; present_now(); }
+    else { held = 0; g_frame_top = 1; present_now(); g_frame_top = 0; }
     while(g_menu_open && g_in_game){
         SDL_Event e;
         while(SDL_PollEvent(&e)){
@@ -913,8 +949,10 @@ int plat_next_event(int *what, int *msg, int *h, int *v){
 void plat_shutdown(void){
     if(g_big) SDL_DestroyTexture(g_big);
     if(g_ftex) SDL_DestroyTexture(g_ftex);
+    if(g_lit) SDL_DestroyTexture(g_lit);
     crt_free();
-    g_big = g_ftex = NULL; g_bigk = 0; g_prev_look = -1;
+    light_free();
+    g_big = g_ftex = g_lit = NULL; g_bigk = 0; g_prev_look = -1;
     if(g_ui) SDL_DestroyTexture(g_ui);
     if(g_tex) SDL_DestroyTexture(g_tex);
     if(g_ren) SDL_DestroyRenderer(g_ren);
