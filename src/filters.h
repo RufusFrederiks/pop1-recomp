@@ -9,5 +9,8 @@
 void filter_advmame(const uint32_t *src, int w, int h, uint32_t *dst, int k, int y0, int y1);
 void filter_xbr(const uint32_t *src, int w, int h, uint32_t *dst, int k, int y0, int y1);
 #define FILTER_REACH 2
+/* MMPX is a 2x filter, so 4x only (it runs twice); it reads further. */
+void filter_mmpx(const uint32_t *src, int w, int h, uint32_t *dst, int y0, int y1);
+#define MMPX_REACH 5
 
 #endif

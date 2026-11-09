@@ -984,3 +984,33 @@ loads, Controls page lists the menu's buttons.
 
 (Also: the previous build never reached Rufus's PC; the game was running
 when it was copied over, so he was still on the first layout.)
+
+## 2026-11-09 — MMPX look
+
+A seventh look, *MMPX*, after *xBR*: "MMPX Style-Preserving Pixel Art
+Magnification" by Morgan McGuire and Mara Gagiu (JCGT 2021, reference code
+MIT), written for this project in `src/filters.c` from the paper's rules.
+
+- MMPX is a 2× filter, so the look runs it twice for 4× (always 4×; its
+  stage is not dropped to 3× on small screens like AdvMAME and xBR, there
+  being no 3× form). If the GPU can't hold a 4× stage it falls back to the
+  plain nearest copy.
+- It only ever copies a source pixel, never mixes two: checked on a game
+  frame, every one of the 4.9 million output pixels has a colour that is in
+  the 1× frame. Its rules keep what Scale2x would round off: single pixels,
+  1-pixel lines (the torch holder's thin strokes), crossings and the tips
+  of shapes; 1:1 and 2:1 slopes become straight lines, the darker colour
+  winning so outlines stay closed.
+- Like the other filters, only the rows that changed are done again. MMPX
+  reads 3 pixels away in each pass, so the band is widened by 5 rows
+  (`MMPX_REACH`), and the 2× picture between the passes is kept from frame
+  to frame. The seven rows it reads are copied into a small ring of padded
+  lines, so the loop has no edge checks.
+- Timing, one core, 640×480 → 2560×1920: full frame (a room change)
+  11.3 ms, a 60-row band 1.9 ms (AdvMAME 4× 2.9 ms, xBR 4× 20 ms).
+- `pop1.cfg` keeps the numbers the looks already had (CRT Monitor stays 4,
+  CRT TV 5) and MMPX is 6, so a saved look stays the same look; the menu
+  order is separate (`LOOK_CFG`).
+
+Checked with the real game (Linux, headless): Level 1 in MMPX, the menu
+with the hint "CLEAN LINES, ONLY THE ORIGINAL COLOURS".

@@ -76,11 +76,15 @@ static struct { int theme, win, fullscreen, scanlines, sound, music, graphics, l
 static const char *GRAPHICS[] = { "B&W", "Colour", "LC Colour" };
 /* The looks. Everything from index 1 on is drawn through the 4x stage;
  * the filter decides how the game frame gets to 4x (see filter_into_stage). */
-enum { LOOK_ORIGINAL, LOOK_REMASTERED, LOOK_ADVMAME, LOOK_XBR, LOOK_CRT_MONITOR, LOOK_CRT_TV };
-static const char *LOOKS[] = { "Original", "Remastered", "AdvMAME", "xBR", "CRT Monitor", "CRT TV" };
+enum { LOOK_ORIGINAL, LOOK_REMASTERED, LOOK_ADVMAME, LOOK_XBR, LOOK_MMPX, LOOK_CRT_MONITOR, LOOK_CRT_TV };
+static const char *LOOKS[] = { "Original", "Remastered", "AdvMAME", "xBR", "MMPX", "CRT Monitor", "CRT TV" };
 static const char *LOOK_HINT[] = { "WHOLE PIXELS, LIKE THE MAC", "SHARP PIXELS SCALED 4X TO FILL THE SCREEN",
                                    "SMOOTHED DIAGONALS, STILL PIXEL ART", "SMOOTH CURVES AND EDGES",
+                                   "CLEAN LINES, ONLY THE ORIGINAL COLOURS",
                                    "AN APPLE RGB MONITOR: FINE STRIPES, SOFT GLOW", "A TV: SCANLINES, SHADOW MASK, GLOW" };
+/* The number each look has in pop1.cfg. The menu order can change without
+ * changing these, so a saved look stays the same look (MMPX came later). */
+static const int LOOK_CFG[] = { 0, 1, 2, 3, 6, 4, 5 };
 #define IS_CRT(l) ((l) == LOOK_CRT_MONITOR || (l) == LOOK_CRT_TV)
 #define NLOOKS ((int)(sizeof LOOKS / sizeof *LOOKS))
 #define REMASTERED (S.look != LOOK_ORIGINAL)
@@ -98,7 +102,7 @@ static void cfg_load(void){
         if(sscanf(line, "%31[a-z] = %d", k, &v) != 2) continue;
         if(!strcmp(k, "theme") && v >= 0 && v < NTHEMES) S.theme = v;
         else if(!strcmp(k, "window") && v >= 0 && v <= MAXWIN) S.win = v;   /* the old "scale" is ignored: Auto fits better */
-        else if(!strcmp(k, "look") && v >= 0 && v < NLOOKS) S.look = v;
+        else if(!strcmp(k, "look")){ for(int i = 0; i < NLOOKS; i++) if(LOOK_CFG[i] == v) S.look = i; }
         else if(!strcmp(k, "crop")) S.crop = v != 0;
         else if(!strcmp(k, "fullscreen")) S.fullscreen = v != 0;
         else if(!strcmp(k, "scanlines")) S.scanlines = v != 0;
@@ -111,11 +115,11 @@ static void cfg_save(void){
     FILE *f = fopen(p, "wb"); if(!f) return;
     fprintf(f, "# Prince of Persia recomp settings\n# graphics: 0 black-and-white, 1 colour (640x480), 2 LC colour (512x384)\n"
                "# look: 0 original (whole-number scaling), 1 remastered (4x, fills the screen), 2 advmame, 3 xbr,\n"
-               "#       4 crt monitor, 5 crt tv\n"
+               "#       4 crt monitor, 5 crt tv, 6 mmpx\n"
                "# crop: 1 = leave out the black rows the colour game never draws in\n"
                "# window: 0 auto (largest that fits), else the size in half steps (2 = 1x, 3 = 1.5x, ...)\n"
                "graphics = %d\nlook = %d\ncrop = %d\ntheme = %d\nwindow = %d\nfullscreen = %d\nscanlines = %d\n",
-            S.graphics, S.look, S.crop, S.theme, S.win, S.fullscreen, S.scanlines);
+            S.graphics, LOOK_CFG[S.look], S.crop, S.theme, S.win, S.fullscreen, S.scanlines);
     fclose(f);
 }
 
@@ -521,7 +525,7 @@ static SDL_Rect dest_rect(void){
  * and 4 above, so their work reaches the screen almost 1:1 instead of being
  * shrunk away. Made again when the wanted factor changes. */
 static int stage_factor(const SDL_Rect *d){
-    if(S.look == LOOK_REMASTERED || IS_CRT(S.look)) return 4;
+    if(S.look == LOOK_REMASTERED || S.look == LOOK_MMPX || IS_CRT(S.look)) return 4;   /* MMPX: 2x twice */
     return (double)d->h / g_view.h < 3.5 ? 3 : 4;
 }
 static int big_stage(int want){
@@ -543,12 +547,13 @@ static int big_stage(int want){
 }
 
 /* The filter step: the game frame into the 4x stage. Remastered (nearest
- * neighbour) is a plain copy of g_tex, which samples nearest. AdvMAME and xBR
- * run on the CPU into g_fout, but only over the rows that changed since the
+ * neighbour) is a plain copy of g_tex, which samples nearest. AdvMAME, xBR
+ * and MMPX run on the CPU into g_fout, but only over the rows that changed since the
  * last frame (plus the filter's reach), and only those rows are uploaded. */
 static void filter_into_stage(void){
     int k = g_bigk;
-    if(S.look == LOOK_REMASTERED || IS_CRT(S.look) || (k != 3 && k != 4)){ SDL_RenderCopy(g_ren, g_tex, NULL, NULL); return; }
+    if(S.look == LOOK_REMASTERED || IS_CRT(S.look) || (k != 3 && k != 4) || (S.look == LOOK_MMPX && k != 4)){
+        SDL_RenderCopy(g_ren, g_tex, NULL, NULL); return; }
     if(!g_fout){
         g_fout = malloc((size_t)MAXW * 4 * MAXH * 4 * 4);
         g_prev = malloc((size_t)MAXW * MAXH * 4);
@@ -567,10 +572,12 @@ static void filter_into_stage(void){
         while(y1 > y0 && !memcmp(g_px + (y1 - 1) * W, g_prev + (y1 - 1) * W, (size_t)W * 4)) y1--;
     }
     if(y0 < y1){
-        y0 = y0 - FILTER_REACH < 0 ? 0 : y0 - FILTER_REACH;
-        y1 = y1 + FILTER_REACH > H ? H : y1 + FILTER_REACH;
-        if(S.look == LOOK_ADVMAME) filter_advmame(g_px, W, H, g_fout, k, y0, y1);
-        else                       filter_xbr(g_px, W, H, g_fout, k, y0, y1);
+        int reach = S.look == LOOK_MMPX ? MMPX_REACH : FILTER_REACH;
+        y0 = y0 - reach < 0 ? 0 : y0 - reach;
+        y1 = y1 + reach > H ? H : y1 + reach;
+        if(S.look == LOOK_ADVMAME)   filter_advmame(g_px, W, H, g_fout, k, y0, y1);
+        else if(S.look == LOOK_MMPX) filter_mmpx(g_px, W, H, g_fout, y0, y1);
+        else                         filter_xbr(g_px, W, H, g_fout, k, y0, y1);
         SDL_Rect r = { 0, y0 * k, W * k, (y1 - y0) * k };
         SDL_UpdateTexture(g_ftex, &r, g_fout + (size_t)y0 * k * W * k, W * k * 4);
         memcpy(g_prev, g_px, (size_t)W * H * 4);
