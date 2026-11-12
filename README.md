@@ -1,4 +1,7 @@
-# pop1-recomp
+# Prince of Persia (Macintosh, 1992) — pop1-recomp
+
+**Game:** *Prince of Persia*, Macintosh version (Brøderbund, 1992, Motorola 68k).
+**Approach:** static recompilation. **Not** the 1989 Apple II or 1990 DOS version.
 
 [![Build check](https://github.com/RufusFrederiks/pop1-recomp/actions/workflows/build.yml/badge.svg)](https://github.com/RufusFrederiks/pop1-recomp/actions/workflows/build.yml)
 (Windows, Linux and macOS: the code compiles. GitHub never has the game, so
