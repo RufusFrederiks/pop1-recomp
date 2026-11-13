@@ -1155,3 +1155,20 @@ Not tested: a real Windows PC and graphics card, macOS. Not done yet:
 light through windows and gates (needs the sprites as separate layers),
 shadows shaped like the figure rather than a capsule, a shader CRT, the
 upside-down room.
+
+### Enhanced lighting: the Prince next to a torch
+
+Rufus's first look on his PC: next to a torch the Prince went pale and
+pinkish, with a haze over him, and his shadow was a long wedge across the
+back wall. Three causes, three fixes:
+- the light in the air was added over everything, the Prince included: now
+  it shows fully only against the dark background, a quarter of it over
+  the Prince and the stones (and it is weaker: 0.030 from 0.050);
+- the glow took anything bright, so his white trousers glowed: now it is
+  the flames, plus only what is far brighter than white (threshold 1.6);
+- the light close to a flame levelled off too late: stronger roll-off,
+  relief capped lower.
+The character shadow was cast like a 2D ray from the torch to the edge of
+the light. The wall is behind the figure, so the shadow on it is now the
+figure's capsule moved a short way away from the light (up to 0.4 tile),
+softer the further it moves.

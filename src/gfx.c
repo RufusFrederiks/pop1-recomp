@@ -79,10 +79,10 @@ static const struct {
     34.0f,
     46.0f,
     2.6f,
-    0.050f,
+    0.030f,
     0.085f,
     1.0f,
-    0.95f, 0.95f,
+    0.95f, 1.60f,
     0.9f,
     0.20f,
     0.11f,
@@ -250,14 +250,18 @@ static const char *FS_LIGHT =
 "          if(c >= uNC) break;\n"
 "          float hw = uChar[c].w;\n"
 "          vec2 a = vec2(uChar[c].x, uChar[c].y - hw), b = vec2(uChar[c].x, uChar[c].y - uChar[c].z + hw);\n"
-"          float m = 1.0e9;\n"
-"          for(int q = 0; q < 5; q++) m = min(m, segd(mix(a, b, float(q) / 4.0), p, uLpos[i].xy));\n"
-"          float s = smoothstep(hw * 0.5, hw * 1.9, m);\n"
-"          s = mix(1.0, s, smoothstep(hw * 1.2, hw * 2.2, segd(p, a, b)));\n"   /* not on the figure itself */
+/* the wall is a little behind the figure: its shadow there is the figure
+ * moved away from the light, a short way, softer the further it falls */
+"          vec2 away = (a + b) * 0.5 - uLpos[i].xy; float al = length(away);\n"
+"          float shift = min(al * 0.30, uTileW * 0.40);\n"
+"          vec2 off = away / max(al, 0.001) * shift;\n"
+"          float soft = hw * (0.7 + shift / (uTileW * 0.4));\n"
+"          float s = smoothstep(hw * 0.4, hw * 0.4 + soft, segd(p, a + off, b + off));\n"
+"          s = mix(1.0, s, smoothstep(hw * 0.9, hw * 1.6, segd(p, a, b)));\n"   /* not on the figure itself */
 "          sh *= mix(1.0, s, uCharK * uShadow);\n"
 "        }\n"
 "        vec3 l3 = normalize(vec3(d, uLz));\n"
-"        float nl = clamp(dot(n, l3) / l3.z, 0.0, 1.8);\n"
+"        float nl = clamp(dot(n, l3) / l3.z, 0.0, 1.4);\n"
 "        vec3 c = uLcol[i].rgb * uLpos[i].w;\n"
 "        surf += c * att * sh * nl;\n"
 "        float a2 = dist / (uTileW * 0.9);\n"
@@ -268,7 +272,7 @@ static const char *FS_LIGHT =
 "        }\n"
 "      }\n"
 "    }\n"
-"    surf /= 1.0 + 0.45 * max(surf.r, max(surf.g, surf.b));\n"   /* close to a flame the light levels off */
+"    surf /= 1.0 + 0.9 * max(surf.r, max(surf.g, surf.b));\n"   /* close to a flame the light levels off */
 "    float st = 1.0 - smoothstep(uStatusY - 1.0, uStatusY + 3.0, p.y);\n"
 "    surf *= st; air *= st; zone *= st; ao = mix(1.0, ao, st);\n"
 "  }\n"
@@ -285,6 +289,7 @@ static const char *FS_COMMON =
 "uniform int uNB;\n"
 "uniform vec4 uBlob[2];\n"        /* x, y, half width, half height */
 "vec3 lin(vec3 c){ return pow(c, vec3(2.2)); }\n"
+"float gFl;\n"
 "float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\n"
 "float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);\n"
 "  return mix(mix(h21(i), h21(i + vec2(1.0, 0.0)), f.x), mix(h21(i + vec2(0.0, 1.0)), h21(i + vec2(1.0, 1.0)), f.x), f.y); }\n"
@@ -310,7 +315,8 @@ static const char *FS_COMMON =
 "  float grain = 0.8 + 0.4 * vnoise(g / 7.0) * vnoise(g / 23.0 + 9.0) * 2.0;\n"
 "  c += empty * uBack * grain * L.rgb * vec3(0.80, 0.92, 1.0);\n"
 "  c += a * fl * uFlame;\n"
-"  c += texture2D(uAir, uv).rgb * (1.0 - 0.6 * fl);\n"
+"  c += texture2D(uAir, uv).rgb * (1.0 - fl) * mix(0.25, 1.0, empty);\n"
+"  gFl = fl;\n"
 "  return c;\n"
 "}\n";
 
@@ -322,6 +328,7 @@ static const char *FS_SRC =
 "  vec3 a; vec3 c = lit(texture2D(uPic, vUV).rgb, vUV, a);\n"
 "  float m = max(c.r, max(c.g, c.b));\n"
 "  float k = max(m - uThresh, 0.0); k = k * k / (k + 0.25);\n"
+"  k = max(k, gFl * m * 0.45);\n"
 "  gl_FragColor = vec4(c * (k / max(m, 0.0001)), 1.0);\n"
 "}\n";
 
