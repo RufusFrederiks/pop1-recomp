@@ -1085,3 +1085,73 @@ flames in each.
 
 Not handled: the upside-down potion (the room is drawn flipped; the walls
 check then fails and the light fades out until it is undone).
+
+## 2026-11-13 — Enhanced lighting: shaders (a recomp-only effect)
+
+Rufus wanted to go further than the torch light, with everything modern
+that fits, and always a way back to the game as it was. So: *Lighting* is
+now Off / Classic / Enhanced. Classic is `light.c`, untouched (checked: same
+picture as before apart from the flames' own animation). Enhanced is new,
+`src/gfx.c`. The state before this work is the branch
+`backup-before-enhanced-graphics`.
+
+**Shaders next to SDL's renderer.** SDL2's renderer has no shaders of its
+own, but its OpenGL driver shares its context: after `SDL_RenderFlush` any
+GL call can be made, as long as SDL finds GL's state as it left it.
+`gfx.c` saves and restores everything it touches (`glPushAttrib`, the bound
+framebuffer, the program through the ARB handle SDL itself uses), finds
+SDL's texture by `SDL_GL_BindTexture`, and draws with OpenGL 2.1 / GLSL 1.20
+(framebuffer objects, RGBA16F). Functions are loaded by name
+(`SDL_GL_GetProcAddress`; Windows exports only GL 1.1), under `qgl...`
+names because `SDL_opengl.h` declares the `gl...` ones.
+
+**The renderer changes only when asked.** The game starts on the system's
+default renderer (Direct3D on Windows), exactly as before, unless
+`lighting = 2` was saved. Choosing Enhanced makes the renderer again as
+"opengl" (`renderer_make`: all textures freed and made again). If that or
+the shaders fail, Enhanced is not offered and the default renderer comes
+back. `gpu = 0` in `pop1.cfg` forbids OpenGL.
+
+**What it draws.** At the game's own size, once per frame (`gfx_frame`):
+1. occluders from the room's tiles (`light_room`): walls and pillars red,
+   floor slabs green, half size, blurred once. Measured on a frame: a wall
+   tile is 64 × 126 from (64·col, 40 + 126·row + 3); a floor's front face is
+   the 8 rows around the row's bottom line;
+2. the light pass: per pixel, per light (torches, potions in their liquid's
+   colour, a sword flash): falloff, 24 steps through the occluders towards
+   the light (light gets ~34 px into stone, so faces near a torch are lit),
+   relief from a normal made of the frame's own brightness, shadows of the
+   Prince and the guard, corner darkening from stone close by. Second
+   output: light in the air;
+3. bloom: the bright parts down five sizes (13-tap) and up again (tent).
+Per target (`gfx_apply`: the 4× stage, and the 1× frame for the CRT looks):
+picture × light, the black background as a faint wall, flames boosted, heat
+haze, bloom, vignette, a tone curve that is the identity below 0.75, a
+dither; then particles. The effect fades with `light_level()`, so title,
+story and princess scenes stay untouched, as with Classic.
+
+**The Prince and the guard.** Found by dumping the globals while the
+Prince walked: the 16-byte character record every PoP has, 18 bytes apart,
+Kid at `A5-0x46BA`, Guard at `A5-0x46A8` (byte 0 frame, 1 x, 2 y,
+3 direction, 4 column, 5 row, 6 action, 9 room, 13 alive; frame numbers are
+the DOS game's, 15 = standing). On the frame: x = (x − 58)·tile/14 +
+0.21·tile, feet at top + y·row/63. Each is a soft upright capsule for the
+shadows, with a dark patch under the feet when on the ground.
+
+**Things that happen.** `play_sound_hook` (the rumble's) also calls
+`pop_gfx_sound`: land soft/med/hard → dust at the Prince's feet; sword on
+sword, hit guard, hit kid → sparks and a short flash between the two. A
+loose floor leaving the room's tiles → dust; debris appearing → more.
+Torches throw sparks; dust drifts and shows where the light is.
+
+**Checked** (Linux, headless, Mesa llvmpipe; and the Windows exe under
+Wine 9): Remastered, xBR, CRT Monitor, CRT TV in Colour, Remastered in LC;
+Original is pixel-identical with lighting 0 and 2; starting on Direct3D
+with Classic and stepping to Enhanced (`POPF3=7`) remakes the renderer and
+carries on. New knobs: `POPGFXDEBUG=1` (tints occluders and capsules),
+`POPGFXTEST=puff@6|clash@6`, `POPF3=s`.
+
+Not tested: a real Windows PC and graphics card, macOS. Not done yet:
+light through windows and gates (needs the sprites as separate layers),
+shadows shaped like the figure rather than a capsule, a shader CRT, the
+upside-down room.

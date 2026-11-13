@@ -36,6 +36,7 @@
 #include "filters.h"
 #include "crt.h"
 #include "light.h"
+#include "gfx.h"
 #include "../ext/macrecomp/runtime/font5x7.h"
 #include <SDL.h>
 #include <stdio.h>
@@ -76,6 +77,29 @@ static const Theme THEMES[] = {
  * the picture (2 = 1x, 3 = 1.5x, ...). look: an index into LOOKS. crop: leave
  * out the rows the colour game never draws in (see view_rect). */
 static struct { int theme, win, fullscreen, scanlines, sound, music, graphics, look, crop, lighting; } S = { 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 };
+/* lighting: 0 off, 1 Classic (light.c), 2 Enhanced (gfx.c: shaders, needs the
+ * OpenGL renderer). gpu: 0 asks SDL for its default renderer, as before the
+ * enhanced lighting existed (Enhanced is then not offered). fx: the parts of
+ * Enhanced, each on or off in pop1.cfg. */
+enum { LIGHT_OFF, LIGHT_CLASSIC, LIGHT_ENHANCED };
+static const char *LIGHTS[] = { "Off", "Classic", "Enhanced" };
+static int g_gpu = 1;
+static int g_gl_failed;                    /* the OpenGL renderer or its shaders could not be had */
+static GfxOpts g_fx = { 1, 1, 1, 1, 1, 1 };
+static int renderer_make(int gl);
+/* the lighting in use: Enhanced falls back to Classic where it can't run */
+static int lighting_now(void){ return S.lighting == LIGHT_ENHANCED && !gfx_available() ? LIGHT_CLASSIC : S.lighting; }
+/* Off -> Classic -> Enhanced. The game is drawn through the system's default
+ * renderer, as it always was, until Enhanced is first chosen: only then is
+ * the renderer made again as an OpenGL one (and stays for this run). */
+static void lighting_next(int dir){
+    int n = (g_gpu && !g_gl_failed) ? 3 : 2;
+    S.lighting = ((S.lighting >= n ? n - 1 : S.lighting) + (dir ? dir : 1) + n) % n;
+    if(S.lighting == LIGHT_ENHANCED && !gfx_available()){
+        renderer_make(1);
+        if(!gfx_available()) S.lighting = dir < 0 ? LIGHT_CLASSIC : LIGHT_OFF;
+    }
+}
 static const char *GRAPHICS[] = { "B&W", "Colour", "LC Colour" };
 /* The looks. Everything from index 1 on is drawn through the 4x stage;
  * the filter decides how the game frame gets to 4x (see filter_into_stage). */
@@ -107,7 +131,14 @@ static void cfg_load(void){
         else if(!strcmp(k, "window") && v >= 0 && v <= MAXWIN) S.win = v;   /* the old "scale" is ignored: Auto fits better */
         else if(!strcmp(k, "look")){ for(int i = 0; i < NLOOKS; i++) if(LOOK_CFG[i] == v) S.look = i; }
         else if(!strcmp(k, "crop")) S.crop = v != 0;
-        else if(!strcmp(k, "lighting")) S.lighting = v != 0;
+        else if(!strcmp(k, "lighting") && v >= 0 && v <= 2) S.lighting = v;
+        else if(!strcmp(k, "gpu")) g_gpu = v != 0;
+        else if(!strcmp(k, "bloom")) g_fx.bloom = v != 0;
+        else if(!strcmp(k, "shadows")) g_fx.shadows = v != 0;
+        else if(!strcmp(k, "relief")) g_fx.relief = v != 0;
+        else if(!strcmp(k, "haze")) g_fx.haze = v != 0;
+        else if(!strcmp(k, "particles")) g_fx.particles = v != 0;
+        else if(!strcmp(k, "vignette")) g_fx.vignette = v != 0;
         else if(!strcmp(k, "fullscreen")) S.fullscreen = v != 0;
         else if(!strcmp(k, "scanlines")) S.scanlines = v != 0;
         else if(!strcmp(k, "graphics") && v >= 0 && v <= 2) S.graphics = v;
@@ -121,10 +152,15 @@ static void cfg_save(void){
                "# look: 0 original (whole-number scaling), 1 remastered (4x, fills the screen), 2 advmame, 3 xbr,\n"
                "#       4 crt monitor, 5 crt tv, 6 mmpx\n"
                "# crop: 1 = leave out the black rows the colour game never draws in\n"
-               "# lighting: 1 = torch light (a recomp effect: colour modes only, never in the original look)\n"
+               "# lighting: 0 off, 1 classic torch light, 2 enhanced (shaders: shadows, glow, relief, sparks)\n"
+               "#           (a recomp effect: colour modes only, never in the original look)\n"
+               "# gpu: 0 = never switch to OpenGL (enhanced lighting is then not offered)\n"
+               "# bloom, shadows, relief, haze, particles, vignette: the parts of enhanced lighting, 1 on / 0 off\n"
                "# window: 0 auto (largest that fits), else the size in half steps (2 = 1x, 3 = 1.5x, ...)\n"
-               "graphics = %d\nlook = %d\ncrop = %d\nlighting = %d\ntheme = %d\nwindow = %d\nfullscreen = %d\nscanlines = %d\n",
-            S.graphics, LOOK_CFG[S.look], S.crop, S.lighting, S.theme, S.win, S.fullscreen, S.scanlines);
+               "graphics = %d\nlook = %d\ncrop = %d\nlighting = %d\ntheme = %d\nwindow = %d\nfullscreen = %d\nscanlines = %d\n"
+               "gpu = %d\nbloom = %d\nshadows = %d\nrelief = %d\nhaze = %d\nparticles = %d\nvignette = %d\n",
+            S.graphics, LOOK_CFG[S.look], S.crop, S.lighting, S.theme, S.win, S.fullscreen, S.scanlines,
+            g_gpu, g_fx.bloom, g_fx.shadows, g_fx.relief, g_fx.haze, g_fx.particles, g_fx.vignette);
     fclose(f);
 }
 
@@ -270,7 +306,7 @@ static const char *item_label(int i, char *buf, size_t n){
                      snprintf(buf, n, "Display   %s", THEMES[S.theme].name); return buf;
     case M_LOOK:     snprintf(buf, n, "Look   %s", LOOKS[S.look]); return buf;
     case M_LIGHT:    if(!REMASTERED) return "Lighting   Not In Original";
-                     snprintf(buf, n, "Lighting   %s", S.lighting ? "On" : "Off"); return buf;
+                     snprintf(buf, n, "Lighting   %s", LIGHTS[lighting_now()]); return buf;
     case M_CROP:     snprintf(buf, n, "Crop Borders   %s", S.crop ? "On" : "Off"); return buf;
     case M_SIZE:     if(S.fullscreen) return "Size   Fullscreen";
                      if(!S.win) return "Size   Window Auto";
@@ -341,7 +377,7 @@ static void draw_menu(void){
             { "This menu",         "Esc or F1" },
             { "Save / load state", "F5 / F9" },
             { "Next look",         "F2" },
-            { "Torch light on/off","F3" },
+            { "Lighting (next)","F3" },
             { "Fullscreen",        "F11 or Alt+Enter" },
         };
         int y = py + 56;
@@ -375,7 +411,9 @@ static void draw_menu(void){
     else if(g_sel == M_LOOK)
         ui_small_center(W / 2, py + ph - 18, LOOK_HINT[S.look], GOLD);
     else if(g_sel == M_LIGHT)
-        ui_small_center(W / 2, py + ph - 18, S.lighting ? "WARM, FLICKERING LIGHT FROM THE TORCHES   F3" : "THE ROOMS AS THE MAC LIT THEM   F3", GOLD);
+        ui_small_center(W / 2, py + ph - 18, lighting_now() == LIGHT_ENHANCED ? "SHADOWS, GLOW, RELIEF ON THE STONES, SPARKS   F3" :
+                        lighting_now() ? "WARM, FLICKERING LIGHT FROM THE TORCHES   F3"
+                                       : "THE ROOMS AS THE MAC LIT THEM   F3", GOLD);
     else if(g_sel == M_CROP)
         ui_small_center(W / 2, py + ph - 18, S.crop ? "THE EMPTY BLACK ROWS LEFT OUT: A BIGGER PICTURE" : "THE WHOLE MAC SCREEN, BLACK ROWS INCLUDED", GOLD);
     else if(g_sel == M_SIZE)
@@ -499,16 +537,50 @@ int plat_open(const char *title, int scale){
         SDL_SetWindowPosition(g_win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     }
     SDL_ShowWindow(g_win);
-    g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_ACCELERATED);
-    if(!g_ren) g_ren = SDL_CreateRenderer(g_win, -1, 0);
-    if(!g_ren){ fprintf(stderr, "renderer: %s\n", SDL_GetError()); return 1; }
-    g_tex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, W, H);
-    g_ui  = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, W, H);
-    SDL_SetTextureBlendMode(g_ui, SDL_BLENDMODE_BLEND);
+    /* The OpenGL renderer only when Enhanced lighting is what was left on. */
+    if(!renderer_make(S.lighting == LIGHT_ENHANCED && g_gpu)) return 1;
     g_start_ms = SDL_GetTicks();
     if(S.fullscreen) apply_window();
     g_menu_open = getenv("POPNOMENU") ? 0 : 1;              /* the start menu */
     return (g_tex && g_ui) ? 0 : 1;
+}
+
+/* Everything made with the renderer. */
+static void textures_free(void){
+    if(g_big) SDL_DestroyTexture(g_big);
+    if(g_ftex) SDL_DestroyTexture(g_ftex);
+    if(g_lit) SDL_DestroyTexture(g_lit);
+    crt_free();
+    light_free();
+    gfx_free();
+    g_big = g_ftex = g_lit = NULL; g_bigk = 0; g_prev_look = -1; g_ftexk = 0;
+    if(g_ui) SDL_DestroyTexture(g_ui);
+    if(g_tex) SDL_DestroyTexture(g_tex);
+    g_ui = g_tex = NULL;
+}
+/* The renderer (again): gl = SDL's OpenGL one with the enhanced lighting's
+ * shaders on it; if that can't be had, or gl is 0, the system's default
+ * (Direct3D on Windows, Metal on a Mac), which is what the game always used.
+ * Enhanced lighting needs shaders, and SDL's renderer only leaves room for
+ * them beside its OpenGL driver. */
+static int renderer_make(int gl){
+    textures_free();
+    if(g_ren){ SDL_DestroyRenderer(g_ren); g_ren = NULL; }
+    if(gl && !g_gl_failed){
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+        g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_ACCELERATED);
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "");
+        if(g_ren && !gfx_init(g_ren)){ gfx_free(); SDL_DestroyRenderer(g_ren); g_ren = NULL; }
+        if(!g_ren){ g_gl_failed = 1; fprintf(stderr, "[display] no OpenGL renderer for enhanced lighting: %s\n", SDL_GetError()); }
+    }
+    if(!g_ren) g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_ACCELERATED);
+    if(!g_ren) g_ren = SDL_CreateRenderer(g_win, -1, 0);
+    if(!g_ren){ fprintf(stderr, "renderer: %s\n", SDL_GetError()); return 0; }
+    {   SDL_RendererInfo ri; if(SDL_GetRendererInfo(g_ren, &ri) == 0) fprintf(stderr, "[display] renderer: %s\n", ri.name); }
+    g_tex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, W, H);
+    g_ui  = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, W, H);
+    if(g_ui) SDL_SetTextureBlendMode(g_ui, SDL_BLENDMODE_BLEND);
+    return g_tex && g_ui;
 }
 
 /* Where the picture goes in the window. Original: the largest whole-number
@@ -597,6 +669,14 @@ static void filter_into_stage(void){
     SDL_RenderCopy(g_ren, g_ftex, NULL, NULL);
 }
 
+/* Torch light on the picture in the current render target (`target`, the
+ * game frame at k times its size): Enhanced where it runs and has a room to
+ * light, else Classic. */
+static int g_enh;                          /* this frame is lit by gfx.c */
+static void light_on(SDL_Texture *target, int k){
+    if(g_enh) gfx_apply(g_ren, target); else light_draw(g_ren, k);
+}
+
 /* The CRT looks: the 4x stage holds the plain game, crt.c builds the CRT
  * picture on the window from it, and the menu and toasts go on top through
  * the same stage (scaled smoothly, as in the other looks) without the
@@ -609,14 +689,14 @@ static int crt_present(const SDL_Rect *d, int ui){
     SDL_SetRenderTarget(g_ren, g_big);
     SDL_SetTextureBlendMode(g_tex, SDL_BLENDMODE_NONE);
     SDL_RenderCopy(g_ren, g_tex, NULL, NULL);
-    light_draw(g_ren, k);
+    light_on(g_big, k);
     if(light_visible()){
         /* the TV and the glow work from the 1x frame: light that too */
         if(!g_lit) g_lit = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, W, H);
         if(g_lit){
             SDL_SetRenderTarget(g_ren, g_lit);
             SDL_RenderCopy(g_ren, g_tex, NULL, NULL);
-            light_draw(g_ren, 1);
+            light_on(g_lit, 1);
             game = g_lit;
         }
     }
@@ -640,6 +720,11 @@ static int crt_present(const SDL_Rect *d, int ui){
 
 static void present_now(void){
     if(!g_ren) return;
+    {   /* POPF3=s: the next lighting at that second, as F3 would (headless checks) */
+        static int done; const char *e = getenv("POPF3");
+        if(e && !done && pop_wall_ticks() >= (uint32_t)(60 * atof(e))){ done = 1; lighting_next(1);
+            fprintf(stderr, "[ui] lighting -> %s\n", LIGHTS[lighting_now()]); }
+    }
     g_last_present = SDL_GetTicks();
     g_view = view_rect();
     uint32_t base = mr_screen_base();
@@ -666,10 +751,12 @@ static void present_now(void){
         }
         /* torch light: never in Original, not while a dialog is up */
         light_update(S.lighting && REMASTERED && !pop_dialog_rect(&o), M.mem + cb, W, H, crb, pal, g_frame_top);
-    } else
+        g_enh = lighting_now() == LIGHT_ENHANCED && light_visible() && gfx_frame(g_ren, g_px, W, H, &g_fx);
+    } else { g_enh = 0;
     for(int y = 0; y < H; y++){
         const uint8_t *row = M.mem + base + (uint32_t)y * (W / 8);
         for(int x = 0; x < W; x++) g_px[y * W + x] = ((row[x >> 3] >> (7 - (x & 7))) & 1) ? t->ink : t->paper;
+    }
     }
     SDL_UpdateTexture(g_tex, NULL, g_px, W * 4);
     int toast = g_toast[0] && SDL_GetTicks() < g_toast_until, ui = g_menu_open || toast;
@@ -694,7 +781,7 @@ static void present_now(void){
         SDL_SetRenderDrawColor(g_ren, 0, 0, 0, 255);
         SDL_RenderClear(g_ren);
         filter_into_stage();
-        light_draw(g_ren, k);                          /* torch light, on the filtered picture */
+        light_on(g_big, k);                            /* torch light, on the filtered picture */
         if(S.scanlines && d.h >= g_view.h * 2){       /* the lower half of each line, darkened */
             static SDL_Rect r[MAXH];
             for(int y = 0; y < H; y++){ r[y].x = 0; r[y].y = y * k + k - k / 2; r[y].w = W * k; r[y].h = k / 2; }
@@ -796,7 +883,7 @@ static void menu_activate(int i, int dir){
     case M_SIZE: size_step(dir); cfg_save(); break;
     case M_CROP: S.crop = !S.crop; if(!S.fullscreen) apply_window(); else g_view = view_rect(); cfg_save(); break;
     case M_SCAN: S.scanlines = !S.scanlines; cfg_save(); break;
-    case M_LIGHT: S.lighting = !S.lighting; cfg_save(); break;
+    case M_LIGHT: lighting_next(dir); cfg_save(); break;
     case M_CONTROLS: g_page_controls = pop_pad_count() ? 2 : 1; break;   /* the controller page if one is in */
     case M_QUIT: g_quit = 1; break;
     }
@@ -818,11 +905,12 @@ int pop_ui_key(const void *ev){
         pop_toast(msg);
         return 1;
     }
-    if(k == SDLK_F3){                                   /* torch light on/off */
+    if(k == SDLK_F3){                                   /* the next lighting (Shift: the previous) */
         if(!g_graphics_running){ pop_toast("LIGHTING: COLOUR MODES ONLY"); return 1; }
         if(!REMASTERED){ pop_toast("LIGHTING: NOT IN THE ORIGINAL LOOK"); return 1; }
-        S.lighting = !S.lighting; cfg_save();
-        pop_toast(S.lighting ? "LIGHTING: ON" : "LIGHTING: OFF");
+        lighting_next((e->key.keysym.mod & KMOD_SHIFT) ? -1 : 1); cfg_save();
+        pop_toast(S.lighting == LIGHT_ENHANCED ? "LIGHTING: ENHANCED" : S.lighting ? "LIGHTING: CLASSIC" :
+                  (g_gl_failed ? "LIGHTING: OFF (ENHANCED NEEDS OPENGL)" : "LIGHTING: OFF"));
         return 1;
     }
     if(k == SDLK_F5 && g_in_game){ pop_state_request(1, g_slot); g_menu_open = 0; return 1; }
@@ -947,16 +1035,9 @@ int plat_next_event(int *what, int *msg, int *h, int *v){
     evhead = (evhead + 1) % EVQ; return 1;
 }
 void plat_shutdown(void){
-    if(g_big) SDL_DestroyTexture(g_big);
-    if(g_ftex) SDL_DestroyTexture(g_ftex);
-    if(g_lit) SDL_DestroyTexture(g_lit);
-    crt_free();
-    light_free();
-    g_big = g_ftex = g_lit = NULL; g_bigk = 0; g_prev_look = -1;
-    if(g_ui) SDL_DestroyTexture(g_ui);
-    if(g_tex) SDL_DestroyTexture(g_tex);
+    textures_free();
     if(g_ren) SDL_DestroyRenderer(g_ren);
     if(g_win) SDL_DestroyWindow(g_win);
-    g_ui = g_tex = NULL; g_ren = NULL; g_win = NULL;
+    g_ren = NULL; g_win = NULL;
     SDL_Quit();
 }

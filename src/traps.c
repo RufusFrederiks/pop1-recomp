@@ -584,6 +584,7 @@ void pop_traps_state(StateIO *io){
 void fn_2_2a5a(uint32_t entry);
 static void play_sound_hook(uint32_t entry){
     pop_pad_sound((int16_t)m68k_r16(SP + 4));  /* SP+0 is m68k_call's return marker */
+    pop_gfx_sound((int16_t)m68k_r16(SP + 4));
     fn_2_2a5a(entry);
 }
 

@@ -37,7 +37,8 @@ src/             hand-written glue for this game
   platform.c     window, display looks and themes, the recomp menu (replaces macrecomp's platform_sdl.c)
   filters.c      AdvMAME and xBR (3x and 4x) and MMPX (4x) for the Remastered looks
   crt.c          the CRT Monitor and CRT TV looks (GPU blend layers)
-  light.c        torch lighting (reads the room from the game's memory, GPU blend layers)
+  light.c        torch lighting, Classic (reads the room from the game's memory, GPU blend layers)
+  gfx.c          torch lighting, Enhanced (OpenGL shaders: shadows, glow, relief, sparks and dust)
 tools/
   prepare.py     images -> work/ + src/gen/ (also decodes the music driver)
   lift.py        macrecomp's lift68k.py plus a few forms it lacks (incl. 68020 scaled index)
@@ -152,8 +153,8 @@ graphics, look, lighting (colour only), display theme (black-and-white only:
 Macintosh, Amber, Phosphor, Parchment, Midnight), size, crop borders (colour only),
 scanlines, the controls, quit.
 **F11** or **Alt+Enter** toggles fullscreen, **F2** (Shift+F2) switches
-to the next (previous) look while you play, **F3** turns the torch light
-on and off. Settings are kept in
+to the next (previous) look while you play, **F3** steps through the
+lighting (Off, Classic, Enhanced). Settings are kept in
 `pop1.cfg`.
 
 **Look**: *Remastered* (the default) scales the picture 4× and then
@@ -173,9 +174,30 @@ uses whole-number scaling only (1×, 2×, 3×...), the Mac's pixels exactly,
 with black borders where the screen has room left.
 
 **Lighting** (colour modes, off by default; F3): an effect of this recomp,
-not of the original game. The room is dimmed a little and each torch casts
-a warm, gently flickering pool of light, with a small glow on its flame;
-a potion glows faintly in its own colour. It works in every look except
+not of the original game. *Classic*: the room is dimmed a little and each
+torch casts a warm, gently flickering pool of light, with a small glow on
+its flame; a potion glows faintly in its own colour. *Enhanced* goes much
+further, with shaders on the graphics card:
+
+- the torches really light the room: the light falls off with distance,
+  is stopped by walls, floors and pillars, and the Prince and the guards
+  throw shadows;
+- relief: the light rakes across the stones, from the picture's own shading
+  (no art is redrawn);
+- the flames glow (HDR bloom), the black background shows as a faintly lit
+  wall near a torch, and corners and the space under ledges are a little
+  darker;
+- heat haze above the flames, sparks rising from them, dust drifting in the
+  light, dust where the Prince lands or a loose floor drops, sparks and a
+  flash where swords meet;
+- a potion lights its surroundings in its own colour.
+
+Enhanced needs OpenGL 2.1 (any graphics card since about 2008). The game
+is drawn through the system's usual renderer until Enhanced is first
+chosen, and switches to OpenGL only then; if that fails the choice is
+simply not offered. Its parts can be switched off one by one in `pop1.cfg`
+(`bloom`, `shadows`, `relief`, `haze`, `particles`, `vignette`), and
+`gpu = 0` keeps the game off OpenGL altogether. Lighting works in every look except
 *Original*, which always stays the Mac's picture, and under the CRT looks.
 The recomp reads where the torches are from the level in the game's memory
 and only lights a torch once its flame is really on the screen, so the
@@ -273,7 +295,7 @@ For headless runs: `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software`.
 - [x] Colour mode (Persia(COLOR), 640x480) and LC colour (Persia(LC), 512x384)
 - [x] Savestates (F5 / F9, nine slots)
 - [x] Display looks: Original, Remastered, AdvMAME, xBR, MMPX, CRT Monitor, CRT TV (F2); Crop Borders; DPI-aware fullscreen
-- [x] Torch lighting (F3), a recomp-only effect
+- [x] Torch lighting (F3), a recomp-only effect: Classic, and Enhanced (shader lighting with shadows, glow, relief, sparks and dust; tested by Claude on Linux and under Wine, not yet on a real Windows PC)
 - [x] Controllers: Xbox, PlayStation, Switch Pro; menu, rumble, remappable (tested by Claude with a virtual controller)
 - [x] Sprite extractor (colour sets to PNG, for the HD work)
 - [x] Level 1 finishable (played through on Windows)

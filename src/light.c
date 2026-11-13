@@ -340,6 +340,58 @@ void light_draw(SDL_Renderer *ren, int k){
     SDL_SetTextureAlphaMod(g_grad, 255);
 }
 
+int light_sources(LightSrc *out, int max){
+    int n = 0; uint32_t now = SDL_GetTicks();
+    if(!light_visible()) return 0;
+    for(int i = 0; i < g_nsrc && n < max; i++){
+        const Src *s = &g_src[i];
+        if(s->kind == 0 ? !s->seen : (now - s->ok_ms >= 400 || !s->colour)) continue;
+        LightSrc *o = &out[n++];
+        o->kind = s->kind; o->key = s->key; o->x = (float)s->x; o->y = (float)s->y; o->phase = (float)s->phase;
+        o->r = (s->colour >> 16 & 255) / 255.f; o->g = (s->colour >> 8 & 255) / 255.f; o->b = (s->colour & 255) / 255.f;
+    }
+    return n;
+}
+float light_level(void){ return light_visible() ? (float)(g_presence * g_fade * g_fade) : 0; }
+int light_room(unsigned char tiles[40], float *tile_w, float *top, float *row_h){
+    if(!g_geo || g_room < 1 || g_room > 24) return 0;
+    uint32_t a5 = m68k_r32(0x904), fg = a5 - 0x16E2;
+    int up = r16s(a5 - 0x4590);
+    for(int c = 0; c < 10; c++) tiles[c] = (up >= 1 && up <= 24) ? (m68k_r8(fg + (uint32_t)(up - 1) * 30 + 20 + (uint32_t)c) & 31) : 255;
+    for(int i = 0; i < 30; i++) tiles[10 + i] = m68k_r8(fg + (uint32_t)(g_room - 1) * 30 + (uint32_t)i) & 31;
+    *tile_w = (float)g_geo->tile_w; *top = (float)g_geo->top; *row_h = (float)g_geo->row_h;
+    return g_level * 100 + g_room;
+}
+
+/* The game's two characters. Each is the 16-byte record every PoP has, here
+ * 18 bytes apart: Kid at A5-0x46BA, Guard at A5-0x46A8 (found by watching
+ * memory while the Prince walks; frame numbers are the DOS game's). Bytes:
+ * 0 frame, 1 x, 2 y, 3 direction, 4 column, 5 row, 6 action, 9 room,
+ * 13 alive (0xFF = alive). x is in the game's own units (14 to a tile, 58 at
+ * the left edge), y the floor line of 200 (55, 118, 181). */
+void light_chars(LightChar out[2]){
+    static const uint32_t at[2] = { 0x46BA, 0x46A8 };
+    out[0].there = out[1].there = 0;
+    if(!g_geo || !light_visible() || g_room < 1) return;
+    uint32_t a5 = m68k_r32(0x904);
+    const Geo *G = g_geo;
+    for(int i = 0; i < 2; i++){
+        uint32_t c = a5 - at[i];
+        int frame = m68k_r8(c), x = m68k_r8(c + 1), y = m68k_r8(c + 2), action = m68k_r8(c + 6),
+            room = m68k_r8(c + 9), alive = (int8_t)m68k_r8(c + 13);
+        if(!frame || room != g_room) continue;
+        LightChar *o = &out[i];
+        o->there = 1; o->frame = frame;
+        o->x = (float)((x - 58) * G->tile_w / 14.0 + G->tile_w * 0.21);
+        o->y = (float)(G->top + y * G->row_h / 63.0);
+        o->grounded = action == 0 || action == 1 || action == 5 || action == 7;
+        double h = 82;                                    /* standing, of 126 a row */
+        if(frame >= 107 && frame <= 119) h = 50;          /* crouching */
+        if(alive >= 0 || frame == 185) h = 0;             /* dead on the floor */
+        o->h = (float)(h * G->row_h / 126.0);
+    }
+}
+
 void light_free(void){
     if(g_grad) SDL_DestroyTexture(g_grad);
     if(g_lmap) SDL_DestroyTexture(g_lmap);

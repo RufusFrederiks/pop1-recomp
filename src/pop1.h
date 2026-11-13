@@ -72,6 +72,8 @@ void pop_pad_keymap(uint8_t map[16]);
 int pop_pad_shift(void);
 void pop_pad_rumble(int low, int high, int ms);
 void pop_pad_sound(int n);
+/* ... and the enhanced lighting makes dust and sparks for some (gfx.c). */
+void pop_gfx_sound(int n);
 int pop_pad_count(void);
 const char *pop_pad_name(void);
 int pop_pad_rows(char rows[][2][48], int max);
